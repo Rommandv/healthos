@@ -24,6 +24,7 @@ LOGS_DIR = DATA_DIR / "tactical" / "logs"
 TIMEZONE = ZoneInfo(os.getenv("HEALTH_OS_TIMEZONE", "Asia/Omsk"))
 ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-3-5-haiku-latest")
 CONTEXT_FILE_SUFFIXES = {".yaml", ".yml", ".md", ".txt"}
+MAX_KNOWLEDGE_FILES = 3
 CORE_CONTEXT_FILES = (
     BASE_DIR / "CLAUDE.md",
     DATA_DIR / "strategic" / "directives.yaml",
@@ -78,12 +79,9 @@ def load_health_context(user_text: str | None = None, daily_log: dict | None = N
     log_text = yaml.safe_dump(log_data, allow_unicode=True, sort_keys=False)
     parts.append(f"## {log_rel_path}\n{log_text}")
 
-    for topic in select_knowledge_topics(user_text or ""):
-        for path in sorted(KNOWLEDGE_TOPIC_DIRS[topic].glob("*")):
-            if not should_include_context_file(path):
-                continue
-            rel_path = path.relative_to(BASE_DIR)
-            parts.append(f"## {rel_path}\n{load_text_file(path)}")
+    for path in retrieve_knowledge_files(user_text or ""):
+        rel_path = path.relative_to(BASE_DIR)
+        parts.append(f"## Curated knowledge retrieved: {rel_path}\n{load_text_file(path)}")
 
     return "\n\n".join(parts) if parts else "No Health OS data files found."
 
@@ -103,6 +101,53 @@ def select_knowledge_topics(text: str) -> list[str]:
         for topic, pattern in KNOWLEDGE_TOPIC_PATTERNS.items()
         if re.search(pattern, normalized, re.IGNORECASE)
     ]
+
+
+def tokenize_query(text: str) -> set[str]:
+    return {
+        token
+        for token in re.findall(r"[a-zа-яё0-9]{3,}", text.lower(), re.IGNORECASE)
+        if token
+    }
+
+
+def score_knowledge_file(path: Path, query_tokens: set[str]) -> int:
+    if not query_tokens or not should_include_context_file(path):
+        return 0
+
+    text = load_text_file(path).lower()
+    filename = path.stem.lower().replace("_", " ").replace("-", " ")
+    headings = " ".join(
+        line.lstrip("#").strip().lower()
+        for line in text.splitlines()
+        if line.lstrip().startswith("#")
+    )
+
+    score = 0
+    for token in query_tokens:
+        if token in filename:
+            score += 5
+        if token in headings:
+            score += 3
+        if token in text:
+            score += 1
+    return score
+
+
+def retrieve_knowledge_files(user_text: str) -> list[Path]:
+    topics = select_knowledge_topics(user_text)
+    query_tokens = tokenize_query(user_text)
+    scored_files: list[tuple[int, str, Path]] = []
+
+    for topic in topics:
+        for path in sorted(KNOWLEDGE_TOPIC_DIRS[topic].glob("*")):
+            score = score_knowledge_file(path, query_tokens)
+            if score <= 0:
+                continue
+            scored_files.append((score, path.relative_to(BASE_DIR).as_posix(), path))
+
+    scored_files.sort(key=lambda item: (-item[0], item[1]))
+    return [path for _, _, path in scored_files[:MAX_KNOWLEDGE_FILES]]
 
 
 def default_daily_log(date: str) -> dict:
@@ -313,8 +358,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 def main() -> None:
     if "--check" in sys.argv:
-        context = load_health_context()
+        check_text = " ".join(arg for arg in sys.argv[1:] if arg != "--check")
+        context = load_health_context(check_text)
+        selected_topics = select_knowledge_topics(check_text)
+        selected_files = [
+            path.relative_to(BASE_DIR).as_posix()
+            for path in retrieve_knowledge_files(check_text)
+        ]
         print(f"bot.py import OK; context bytes: {len(context)}")
+        print(f"selected topics: {selected_topics}")
+        print(f"selected knowledge files: {selected_files}")
         return
 
     token = os.getenv("TELEGRAM_BOT_TOKEN")
