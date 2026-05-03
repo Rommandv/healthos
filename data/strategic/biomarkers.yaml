@@ -157,3 +157,65 @@ main_command:
   - reduce_body_fat
   - increase_VO2max
   - stabilize_daily_energy
+
+cardiac_imaging_2026_03_03:
+  type: echocardiography
+  date: 2026-03-03
+  source: "БУЗОО Клиническая медико-санитарная часть №9, Омск"
+  context: "Echocardiography / cardiac ultrasound"
+
+  anthropometrics:
+    height_cm: 175
+    weight_kg: 78
+    body_surface_area_m2: 1.9
+    aorta_cm: 3.3
+
+  left_atrium:
+    size_cm: "4.2x3.3"
+    volume_ml: 38
+    volume_index_ml_m2: 20.0
+
+  left_ventricle:
+    end_diastolic_dimension_cm: 5.4
+    end_systolic_dimension_cm: 3.0
+    end_diastolic_volume_ml: 157.46
+    end_systolic_volume_ml: 27.0
+    interventricular_septum_cm: 0.7
+    posterior_wall_cm: 0.7
+    ejection_fraction_percent: 76
+    myocardial_mass_g: 136
+    myocardial_mass_index_g_m2: 72
+    abnormal_chord: true
+
+  right_heart:
+    right_atrium_cm: "4.1x2.9"
+    right_ventricle_cm: 2.5
+
+  doppler:
+    mitral_flow_E_m_s: 1.2
+    mitral_flow_A_m_s: 0.9
+    E_A_ratio: 1.33
+    aortic_flow_velocity_m_s: 1.43
+    aortic_gradient_mmHg: 8.3
+    pulmonary_flow_velocity_m_s: 1.2
+    pulmonary_gradient_mmHg: 5.8
+
+  findings:
+    heart_chambers_enlarged: false
+    aorta_enlarged: false
+    pathological_flows: false
+    septal_defects: false
+    valve_visible_changes: false
+    echo_free_space: false
+    pericardial_thickening: false
+    myocardial_contractility: satisfactory
+    regurgitation:
+      tricuspid: grade_1
+      mitral: grade_1
+      pulmonary: grade_1
+
+  conclusion:
+    - "Echocardiography without major structural pathology described."
+    - "Abnormal left ventricular chord."
+    - "Trace/grade 1 regurgitation through tricuspid, mitral and pulmonary valves."
+    - "Use as cardiac baseline, not as diagnosis."
