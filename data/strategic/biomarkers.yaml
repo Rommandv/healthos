@@ -1,76 +1,159 @@
 metadata:
+  type: historical_baseline
+  status: not_current_labs
+  context: post_viral_recovery_ORVI
+  period: 2025-09-25_to_2025-10-05
   updated_at: 2026-05-03
-  source: null
-  notes: "Анализов пока нет; значения оставлены null."
+  notes:
+    - "Historical baseline only. Do not treat as current health state."
+    - "CRP and WBC may reflect temporary post-viral inflammation."
 
-lipids:
-  ApoB:
-    value: null
-    unit: mg/dL
-    optimal: "<60"
-    date: null
-  LDL_C:
-    value: null
-    unit: mmol/L
-    optimal: "<1.8"
-    date: null
-  HDL_C:
-    value: null
-    unit: mmol/L
-    optimal: ">1.5"
-    date: null
-  triglycerides:
-    value: null
-    unit: mmol/L
-    optimal: "<0.9"
-    date: null
-  Lp_a:
-    value: null
-    unit: nmol/L
-    optimal: "<30"
-    date: null
+profile:
+  sex: male
+  age: 34
+  goals:
+    - energy_9_10_daily
+    - PBF_14_15_percent
+    - VO2max_60
+    - lean_athletic_body
+    - optimal_biomarkers
 
-metabolic:
-  HbA1c:
-    value: null
-    unit: "%"
-    optimal: "<5.1"
-    date: null
-  fasting_glucose:
-    value: null
+biochemistry_late_2025_09:
+  glucose:
+    value: 5.35
     unit: mmol/L
-    optimal: null
-    date: null
-  fasting_insulin:
-    value: null
-    unit: uIU/mL
-    optimal: "<5"
-    date: null
-
-inflammation:
-  hs_CRP:
-    value: null
-    unit: mg/L
-    optimal: "<1.0"
-    date: null
-
-liver:
+  total_cholesterol:
+    value: 5.37
+    unit: mmol/L
+  LDL:
+    value: 3.44
+    unit: mmol/L
+    interpretation: above_target
   ALT:
-    value: null
+    value: 31
     unit: U/L
-    optimal: "<20"
-    date: null
+  AST:
+    value: 24.6
+    unit: U/L
+  creatinine:
+    value: 90.4
+    unit: umol/L
+  CRP:
+    value: 5.10
+    unit: mg/L
+    interpretation: elevated_but_post_ORVI_context
+  LDH:
+    value: 132.4
+    unit: U/L
 
-fitness:
-  VO2max:
-    value: null
-    unit: ml/kg/min
-    date: null
-  ALMI:
-    value: null
-    unit: kg/m2
-    date: null
-  grip_strength:
-    value: null
+cbc_2025_10_02:
+  WBC:
+    value: 10.60
+    unit: x10^9/L
+    interpretation: elevated_consistent_with_recent_inflammation
+  RBC:
+    value: 5.37
+    unit: x10^12/L
+  HGB:
+    value: 160
+    unit: g/L
+  HCT:
+    value: 47.3
+    unit: percent
+  PLT:
+    value: 270
+    unit: x10^9/L
+  neutrophils:
+    value: 49.4
+    unit: percent
+  lymphocytes:
+    value: 40.6
+    unit: percent
+  ESR:
+    value: 3
+    unit: mm/h
+
+hormones_early_2025_10:
+  TSH:
+    value: 2.197
+    unit: uIU/mL
+    interpretation: within_reference_range
+
+inbody_2025_10_05:
+  weight:
+    value: 78.0
     unit: kg
-    date: null
+  PBF:
+    value: 19.5
+    unit: percent
+    target: 14-15_percent
+  SMM:
+    value: 36.1
+    unit: kg
+  visceral_fat:
+    value: 63.1
+    unit: unclear
+    notes: "Do not interpret without unit confirmation."
+  BMR:
+    value: 1726
+    unit: kcal
+  phase_angle:
+    value: 7.0
+    unit: deg
+
+missing_markers:
+  - HDL
+  - triglycerides
+  - ApoB
+  - Lp(a)
+  - HbA1c
+  - fasting_insulin
+  - non_HDL_cannot_calculate_without_HDL
+  - HOMA_IR_cannot_calculate_without_fasting_insulin
+
+interpretation_notes:
+  - "LDL 3.44 mmol/L is above optimal target."
+  - "CRP 5.10 mg/L is elevated, but this was after ORVI."
+  - "WBC 10.60 is elevated and consistent with recent inflammatory/infectious context."
+  - "PBF 19.5% is above target 14-15%."
+  - "Glucose 5.35 mmol/L is upper-normal and should be retested with HbA1c and fasting insulin."
+  - "Available liver and kidney markers look acceptable."
+  - "TSH is within reference range; if energy symptoms persist, consider free T4/free T3."
+
+targets_12_weeks:
+  PBF: 14-15_percent
+  LDL: improve
+  ApoB: check_and_optimize
+  CRP: less_than_1_mg_L_on_fresh_testing
+  glucose: 4.8-5.1_mmol_L_if_sustainable
+  VO2max: increase
+
+current_stack:
+  supplements:
+    - omega_3
+    - vitamin_D3_K2
+    - CoQ10
+    - magnesium
+    - taurine
+    - glycine
+    - inositol
+    - creatine
+    - planned_tyrosine
+    - planned_alpha_GPC
+  activity:
+    - zone2_cardio
+    - bodyweight_strength
+    - mobility_recovery
+
+risks_to_monitor:
+  - CNS_overload
+  - sleep_deficit
+  - supplement_overlap_zinc_B6_multivitamins
+  - spine_back_symptoms_should_not_be_ignored
+
+main_command:
+  - reduce_inflammation
+  - improve_lipids
+  - reduce_body_fat
+  - increase_VO2max
+  - stabilize_daily_energy
