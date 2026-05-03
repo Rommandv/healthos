@@ -1,0 +1,76 @@
+metadata:
+  updated_at: 2026-05-03
+  source: null
+  notes: "Анализов пока нет; значения оставлены null."
+
+lipids:
+  ApoB:
+    value: null
+    unit: mg/dL
+    optimal: "<60"
+    date: null
+  LDL_C:
+    value: null
+    unit: mmol/L
+    optimal: "<1.8"
+    date: null
+  HDL_C:
+    value: null
+    unit: mmol/L
+    optimal: ">1.5"
+    date: null
+  triglycerides:
+    value: null
+    unit: mmol/L
+    optimal: "<0.9"
+    date: null
+  Lp_a:
+    value: null
+    unit: nmol/L
+    optimal: "<30"
+    date: null
+
+metabolic:
+  HbA1c:
+    value: null
+    unit: "%"
+    optimal: "<5.1"
+    date: null
+  fasting_glucose:
+    value: null
+    unit: mmol/L
+    optimal: null
+    date: null
+  fasting_insulin:
+    value: null
+    unit: uIU/mL
+    optimal: "<5"
+    date: null
+
+inflammation:
+  hs_CRP:
+    value: null
+    unit: mg/L
+    optimal: "<1.0"
+    date: null
+
+liver:
+  ALT:
+    value: null
+    unit: U/L
+    optimal: "<20"
+    date: null
+
+fitness:
+  VO2max:
+    value: null
+    unit: ml/kg/min
+    date: null
+  ALMI:
+    value: null
+    unit: kg/m2
+    date: null
+  grip_strength:
+    value: null
+    unit: kg
+    date: null

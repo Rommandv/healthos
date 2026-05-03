@@ -1,0 +1,13 @@
+.env
+.env.*
+!.env.example
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.DS_Store
+
+data/tactical/logs/*.yaml
+!data/tactical/logs/.gitkeep
+
+knowledge/raw/**

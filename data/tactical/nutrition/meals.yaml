@@ -1,0 +1,91 @@
+metadata:
+  updated_at: 2026-05-03
+  status: personalized_initial
+
+rules:
+  protein_first: true
+  calories_kcal_day: 2450
+  protein_g_day: 160
+  fat_g_day: 75
+  carbs_g_day: 285
+  protein_per_meal_g: "50-80 for 2 meals; 40-60 for 3 meals"
+  fiber_minimum_g_day: 25
+  pre_workout_fat_limit_g: 10
+  note: "14-day recomposition target from user_profile.yaml; review after weight, waist, sleep, energy, and strength trend."
+  review:
+    duration_days: 14
+    daily:
+      - weight_morning
+      - sleep
+    twice_weekly:
+      - waist
+    adjustments:
+      weight_drop_fast_energy_or_strength_down: "+100 kcal/day"
+      weight_stable_waist_down_strength_normal: "keep 2450 kcal/day"
+      weight_up_waist_up: "-100 kcal/day"
+
+meal_templates:
+  breakfast:
+    - name: "Protein oats / yogurt bowl"
+      protein_sources: ["greek yogurt", "cottage cheese", "whey", "eggs"]
+      carbs: ["oats", "berries", "banana", "wholegrain bread"]
+      fats: ["nuts", "olive oil", "avocado"]
+      target: "50-60 g protein, 70-95 g carbs, 15-25 g fat"
+      notes: "Use when training later in the day or when 3 meals are easier."
+
+  lunch:
+    - name: "Gym-day protein bowl"
+      protein_sources: ["chicken", "turkey", "fish", "lean beef", "eggs", "tofu"]
+      carbs: ["rice", "potatoes", "buckwheat", "pasta", "beans"]
+      vegetables: ["leafy greens", "broccoli", "cucumber", "tomatoes"]
+      fats: ["olive oil", "avocado", "nuts"]
+      target: "55-70 g protein, 90-125 g carbs, 20-30 g fat"
+
+  dinner:
+    - name: "Protein + carbs + vegetables"
+      protein_sources: ["fish", "seafood", "chicken", "lean beef", "cottage cheese", "eggs"]
+      carbs: ["potatoes", "rice", "buckwheat", "beans", "fruit"]
+      vegetables: ["any non-starchy vegetables"]
+      fats: ["olive oil", "avocado", "nuts"]
+      target: "55-70 g protein, 80-115 g carbs, 25-35 g fat"
+      notes: "Watch saturated fat if a limit is active in directives.yaml."
+
+  two_meal_day:
+    - name: "Two large meals + protein support"
+      structure:
+        - "Meal 1: 70-80 g protein, 120-145 g carbs, 30-35 g fat"
+        - "Meal 2: 70-80 g protein, 120-145 g carbs, 35-40 g fat"
+        - "Optional protein support if needed: whey, cottage cheese, or greek yogurt"
+      notes: "Use only if total protein and calories are still met."
+
+training_timing:
+  strength:
+    pre_workout:
+      timing: "60-90 min before"
+      protein_g: "20-30"
+      carbs_g: "40-60"
+      fat_g: "<10"
+    post_workout:
+      timing: "within 60 min"
+      protein_g: "30-40"
+      carbs_g: "40-60"
+
+  zone2:
+    pre_workout:
+      timing: "60-90 min before if needed"
+      protein_g: "15-20"
+      carbs_g: "30-50"
+    post_workout:
+      timing: "within 90 min"
+      protein_g: "20-30"
+      carbs_g: "30-50"
+
+  intervals:
+    pre_workout:
+      timing: "90-120 min before"
+      protein_g: "15-20"
+      carbs_g: "50-70"
+    post_workout:
+      timing: "within 45 min"
+      protein_g: "25-35"
+      carbs_g: "50-70"

@@ -1,0 +1,76 @@
+metadata:
+  updated_at: 2026-05-03
+  status: personalized_initial
+
+identity:
+  name: null
+  sex: male
+  birth_date: 1991-06-13
+  age: 34
+  height_cm: 175
+  weight_kg: 74
+  target_weight_kg: null
+  body_fat_percent: null
+
+goals:
+  primary: "Hypertrophy with high cognitive energy and improved VO2max."
+  secondary:
+    - energy
+    - health
+    - productivity
+    - body_composition
+  target_date: 2026-08-01
+
+activity:
+  level: moderate
+  steps_average: null
+  training_experience: good
+  gym_access: true
+  available_equipment:
+    - full_gym
+    - cardio
+    - hammam
+    - sauna
+  available_days_per_week: null
+
+constraints:
+  injuries: []
+  allergies: []
+  disliked_foods: []
+  banned_exercises: []
+  medical_notes: []
+
+preferences:
+  sleep_target_time: "23:00"
+  wake_target_time: "07:00"
+  target_sleep_hours: 8
+  meals_per_day: "2-3"
+  diet_style: null
+
+calculations:
+  method: "Mifflin-St Jeor; TDEE activity factor range 1.35-1.45 until steps and training consistency are confirmed."
+  bmr_kcal_day: 1669
+  tdee_kcal_day: null
+  tdee_range_kcal_day: "2250-2420"
+  recommended_calories_kcal_day: 2450
+  rationale: "14-day recomposition target for body shape/abs and energy without aggressive cutting."
+  macros:
+    protein_g_day: 160
+    fat_g_day: 75
+    carbs_g_day: 285
+
+current_plan:
+  name: "14-day recomposition"
+  goal: "recomposition, body shape/abs, energy"
+  calories_kcal_day: 2450
+  protein_g_day: 160
+  fat_g_day: 75
+  carbs_g_day: 285
+  review_after_days: 14
+  control_rules:
+    - "Weigh in every morning."
+    - "Log sleep every day."
+    - "Measure waist 2 times per week."
+    - "If weight drops faster than 0.5 kg/week and energy or strength drops, add 100 kcal/day."
+    - "If weight is stable, waist decreases, and strength is normal, keep 2450 kcal/day."
+    - "If weight increases and waist increases, subtract 100 kcal/day."

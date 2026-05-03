@@ -1,0 +1,175 @@
+metadata:
+  updated_at: 2026-05-03
+  status: personalized_initial
+  source: "user profile + knowledge/"
+
+rules:
+  progression: "Double progression: reach top of rep range, then add load and return to lower reps."
+  recovery:
+    good: "Full planned volume."
+    tired: "Reduce volume by 50% and keep RPE lower."
+    sleep_under_6h: "Skip strength/intervals; walk or Zone 1."
+  substitutions: "Replace only within the same movement pattern."
+  sleep_window: "23:00-07:00 target; if sleep is under 6h, do not run strength or intervals."
+
+weekly_targets:
+  strength_sessions: 4
+  zone2_minutes: 150
+  vo2max_sessions_max: 1
+
+schedule:
+  - day: 1
+    name: "Upper Hypertrophy A"
+    type: strength
+    exercises:
+      - name: "Bench press or machine chest press"
+        pattern: push
+        sets: 4
+        reps: "6-10"
+        rpe: "7-8"
+      - name: "Chest-supported row"
+        pattern: pull
+        sets: 4
+        reps: "8-12"
+        rpe: "7-8"
+      - name: "Incline dumbbell press"
+        pattern: push
+        sets: 3
+        reps: "8-12"
+        rpe: "7-8"
+      - name: "Lat pulldown or assisted pull-up"
+        pattern: pull
+        sets: 3
+        reps: "8-12"
+        rpe: "7-8"
+      - name: "Lateral raise"
+        pattern: shoulders
+        sets: 3
+        reps: "12-20"
+        rpe: "7-8"
+      - name: "Cable triceps pressdown"
+        pattern: arms
+        sets: 2
+        reps: "10-15"
+        rpe: "7-8"
+
+  - day: 2
+    name: "Lower Hypertrophy A + Zone 2"
+    type: strength_cardio
+    exercises:
+      - name: "Back squat or leg press"
+        pattern: squat
+        sets: 4
+        reps: "6-10"
+        rpe: "7-8"
+      - name: "Romanian deadlift"
+        pattern: hinge
+        sets: 3
+        reps: "8-12"
+        rpe: "7-8"
+      - name: "Leg curl"
+        pattern: hinge
+        sets: 3
+        reps: "10-15"
+        rpe: "7-8"
+      - name: "Calf raise"
+        pattern: calves
+        sets: 3
+        reps: "10-15"
+        rpe: "7-8"
+      - name: "Core anti-extension"
+        pattern: core
+        sets: 3
+        reps: "30-60 sec"
+        rpe: "6-8"
+    cardio_after:
+      type: zone2
+      duration_min: 30
+      intensity: "Can speak in sentences, cannot sing."
+
+  - day: 3
+    name: "Zone 2 + sauna recovery"
+    type: cardio
+    duration_min: 45
+    intensity: "Can speak in sentences, cannot sing."
+    recovery:
+      sauna_or_hammam: "Optional after hydration; skip if sleep deprived or overheated."
+
+  - day: 4
+    name: "Upper Hypertrophy B"
+    type: strength
+    exercises:
+      - name: "Overhead press or machine shoulder press"
+        pattern: push
+        sets: 3
+        reps: "6-10"
+        rpe: "7-8"
+      - name: "Pull-up, assisted pull-up, or pulldown"
+        pattern: pull
+        sets: 4
+        reps: "6-10"
+        rpe: "7-8"
+      - name: "Dumbbell bench press"
+        pattern: push
+        sets: 3
+        reps: "8-12"
+        rpe: "7-8"
+      - name: "Seated cable row"
+        pattern: pull
+        sets: 3
+        reps: "8-12"
+        rpe: "7-8"
+      - name: "Rear delt fly"
+        pattern: shoulders
+        sets: 3
+        reps: "12-20"
+        rpe: "7-8"
+      - name: "Biceps curl"
+        pattern: arms
+        sets: 2
+        reps: "10-15"
+        rpe: "7-8"
+
+  - day: 5
+    name: "Lower Hypertrophy B + VO2max prep"
+    type: strength_cardio
+    exercises:
+      - name: "Deadlift variation or hip thrust"
+        pattern: hinge
+        sets: 3
+        reps: "5-8"
+        rpe: "7-8"
+      - name: "Front squat, hack squat, or leg press"
+        pattern: squat
+        sets: 3
+        reps: "8-12"
+        rpe: "7-8"
+      - name: "Bulgarian split squat"
+        pattern: squat
+        sets: 3
+        reps: "8-12 each side"
+        rpe: "7-8"
+      - name: "Leg extension"
+        pattern: squat
+        sets: 3
+        reps: "10-15"
+        rpe: "7-8"
+      - name: "Carry or core"
+        pattern: core
+        sets: 3
+        reps: "30-60 sec"
+        rpe: "6-8"
+    cardio_after:
+      type: vo2max
+      status: "Start after 4 weeks of consistent Zone 2."
+      protocol: "4 x 4 min hard / 4 min easy, max 1 session per week."
+
+  - day: 6
+    name: "Zone 2"
+    type: cardio
+    duration_min: 75
+    intensity: "Can speak in sentences, cannot sing."
+
+  - day: 7
+    name: "Rest / walk / NSDR"
+    type: recovery
