@@ -4,7 +4,7 @@ import asyncio
 import os
 import re
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -269,6 +269,97 @@ def read_daily_log(date: str | None = None) -> dict:
     return template
 
 
+def review_type_for_date(now: datetime) -> str:
+    if now.weekday() == 2:
+        return "Wednesday mini-review"
+    if now.weekday() == 6:
+        return "Sunday full-review"
+    return "ad-hoc review"
+
+
+def current_phase() -> str:
+    try:
+        profile = yaml.safe_load(USER_PROFILE_FILE.read_text(encoding="utf-8")) or {}
+    except OSError:
+        return "unknown"
+
+    plan_name = (profile.get("current_plan") or {}).get("name")
+    if plan_name == "14-day recomposition":
+        return "14-day recomposition validation"
+    return plan_name or "unknown"
+
+
+def recent_log_dates(days: int = 7) -> list[str]:
+    today = datetime.now(TIMEZONE).date()
+    return [
+        (today - timedelta(days=offset)).isoformat()
+        for offset in range(days - 1, -1, -1)
+    ]
+
+
+def load_existing_recent_logs(days: int = 7) -> tuple[list[tuple[str, dict]], list[str]]:
+    existing_logs: list[tuple[str, dict]] = []
+    missing_dates: list[str] = []
+
+    for date in recent_log_dates(days):
+        path = log_path(date)
+        if path.exists():
+            existing_logs.append((date, read_daily_log(date)))
+        else:
+            missing_dates.append(date)
+
+    return existing_logs, missing_dates
+
+
+def health_review_files() -> tuple[Path, ...]:
+    return (
+        DIRECTIVES_FILE,
+        BIOMARKERS_FILE,
+        USER_PROFILE_FILE,
+        STRATEGY_FILE,
+        PROGRAM_FILE,
+        MEALS_FILE,
+    )
+
+
+def build_health_review_context() -> tuple[str, list[str]]:
+    now = datetime.now(TIMEZONE)
+    existing_logs, missing_dates = load_existing_recent_logs()
+    context_files: list[str] = []
+    parts = [
+        "## Health review metadata\n"
+        + yaml.safe_dump(
+            {
+                "role": "Strategist",
+                "mode": "read_only_telegram_review",
+                "iso_week": now.isocalendar().week,
+                "current_phase": current_phase(),
+                "review_type": review_type_for_date(now),
+                "missing_log_dates": missing_dates,
+            },
+            allow_unicode=True,
+            sort_keys=False,
+        )
+    ]
+
+    for path in health_review_files():
+        if not should_include_context_file(path):
+            continue
+        rel_path = path.relative_to(BASE_DIR).as_posix()
+        context_files.append(rel_path)
+        parts.append(f"## {rel_path}\n{load_text_file(path)}")
+
+    for date, log_data in existing_logs:
+        rel_path = log_path(date).relative_to(BASE_DIR).as_posix()
+        context_files.append(rel_path)
+        parts.append(
+            f"## {rel_path}\n"
+            + yaml.safe_dump(log_data, allow_unicode=True, sort_keys=False)
+        )
+
+    return "\n\n".join(parts), context_files
+
+
 def write_daily_log(data: dict) -> None:
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
     path = log_path(data["date"])
@@ -391,6 +482,21 @@ def build_system_prompt() -> str:
 """
 
 
+def build_health_review_system_prompt() -> str:
+    return """Ты Strategist внутри Health OS.
+
+Правила:
+- Отвечай по-русски, коротко и структурно.
+- Это read-only Telegram review: не обещай и не выполняй изменения файлов.
+- Не обновляй strategy.md, directives.yaml или biomarkers.yaml.
+- Используй только Health review context.
+- Если данных мало, честно скажи, каких данных не хватает.
+- Дай недельный review: summary, nutrition compliance, training compliance, sleep/recovery, weight trend, risks, decision, next 3 actions.
+- Decision должен быть одним из: keep / adjust / deload / maintain.
+- Формат без больших таблиц.
+"""
+
+
 def call_anthropic(user_text: str, entry_type: str, daily_log: dict) -> str:
     client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
     health_context = load_health_context(user_text, daily_log)
@@ -414,6 +520,26 @@ def call_anthropic(user_text: str, entry_type: str, daily_log: dict) -> str:
     return "".join(block.text for block in message.content if block.type == "text").strip()
 
 
+def call_anthropic_health_review(review_context: str, user_text: str) -> str:
+    client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+    message = client.messages.create(
+        model=ANTHROPIC_MODEL,
+        max_tokens=1000,
+        temperature=0.2,
+        system=build_health_review_system_prompt(),
+        messages=[
+            {
+                "role": "user",
+                "content": (
+                    f"Health review context:\n{review_context}\n\n"
+                    f"Команда пользователя: {user_text or '/health-review'}"
+                ),
+            }
+        ],
+    )
+    return "".join(block.text for block in message.content if block.type == "text").strip()
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "Health OS на связи. Пиши простыми фразами: что съел, сколько спал, вес или тренировку. "
@@ -425,6 +551,31 @@ async def today(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     daily_log = read_daily_log()
     daily_log_text = yaml.safe_dump(daily_log, allow_unicode=True, sort_keys=False)
     await update.message.reply_text(f"Лог за сегодня:\n{daily_log_text}")
+
+
+async def health_review(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message:
+        return
+
+    review_context, context_files = build_health_review_context()
+    if not os.getenv("ANTHROPIC_API_KEY"):
+        files_text = "\n".join(f"- {path}" for path in context_files)
+        await update.message.reply_text(
+            "Health review context собран, но Anthropic-ответ выключен: добавь ANTHROPIC_API_KEY в .env.\n\n"
+            f"Файлы:\n{files_text}"
+        )
+        return
+
+    try:
+        answer = await asyncio.to_thread(
+            call_anthropic_health_review,
+            review_context,
+            update.message.text or "/health-review",
+        )
+    except Exception as exc:
+        answer = f"Не смог выполнить /health-review: {exc}"
+
+    await update.message.reply_text(answer)
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -473,6 +624,8 @@ def main() -> None:
     app = Application.builder().token(token).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("today", today))
+    app.add_handler(CommandHandler("health_review", health_review))
+    app.add_handler(MessageHandler(filters.Regex(r"^/health-review(?:@\w+)?(?:\s|$)"), health_review))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     try:
