@@ -488,14 +488,37 @@ def build_health_review_system_prompt() -> str:
 
 Правила:
 - Отвечай по-русски, коротко и структурно.
+- Длина ответа по умолчанию: примерно 1800-2200 символов максимум.
 - Это read-only Telegram review: не обещай и не выполняй изменения файлов.
 - Не обновляй strategy.md, directives.yaml или biomarkers.yaml.
 - Используй только Health review context.
 - Если данных мало, честно скажи, каких данных не хватает.
 - Если мало логов, пиши "мало daily logs"; не говори, что biomarkers/ЭХОКГ/LDL отсутствуют, если biomarkers.yaml был загружен.
-- Формат review: 1. Week / phase / review type; 2. Data coverage; 3. Nutrition; 4. Training; 5. Sleep / recovery; 6. Weight trend; 7. Risks; 8. Decision; 9. Next 3 actions.
+- Если daily logs неполные, напиши коротко: "Daily logs incomplete: X/Y days. Cannot validate trend yet."
+- Используй только этот формат:
+Health Review — Week X
+Phase: ...
+Data coverage: ...
+Decision: maintain / keep / adjust / deload
+
+Signals:
+- Nutrition: one line
+- Training: one line
+- Sleep/recovery: one line
+- Weight: one line
+- Biomarkers: one line only if relevant
+
+Risks:
+- max 3 bullets
+
+Next 3 actions:
+1.
+2.
+3.
+
+Могу раскрыть nutrition/training/sleep отдельно.
 - Decision должен быть одним из: keep / adjust / deload / maintain.
-- Формат без больших таблиц.
+- Не используй таблицы.
 """
 
 
@@ -526,7 +549,7 @@ def call_anthropic_health_review(review_context: str, user_text: str) -> str:
     client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
     message = client.messages.create(
         model=ANTHROPIC_MODEL,
-        max_tokens=800,
+        max_tokens=650,
         temperature=0.2,
         system=build_health_review_system_prompt(),
         messages=[
