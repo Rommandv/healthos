@@ -32,7 +32,11 @@ STRATEGY_FILE = DATA_DIR / "tactical" / "strategy.md"
 PROGRAM_FILE = DATA_DIR / "tactical" / "training" / "program.yaml"
 MEALS_FILE = DATA_DIR / "tactical" / "nutrition" / "meals.yaml"
 RUNTIME_CONTEXT_INSTRUCTIONS = """Coach runtime boundaries:
-- Use current Health OS data only; unknown means data is missing.
+- Use loaded Health OS context only, but remember compact routing means some files may be intentionally absent.
+- If a file/section is not loaded in the current context, do not claim the system has no data.
+- Say "в текущем контексте не поднимал эти данные" only when the user explicitly asks about that missing area.
+- Do not mention data absent from the current intent unless the user asks about it.
+- For meal/log_food intent: answer only about food, daily budget, remaining macros/calories, and the next nutrition step; do not add unsolicited comments about LDL, imaging, labs, or other medical topics.
 - Directives override preferences.
 - Coach reads context, answers from the current plan, and helps with today's daily log.
 - Coach does not update strategic files; labs/tests are prepared for /health-labs or strategic review.
