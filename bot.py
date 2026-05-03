@@ -25,6 +25,7 @@ TIMEZONE = ZoneInfo(os.getenv("HEALTH_OS_TIMEZONE", "Asia/Omsk"))
 ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-3-5-haiku-latest")
 CONTEXT_FILE_SUFFIXES = {".yaml", ".yml", ".md", ".txt"}
 MAX_KNOWLEDGE_FILES = 3
+TELEGRAM_SAFE_MESSAGE_LIMIT = 3500
 DIRECTIVES_FILE = DATA_DIR / "strategic" / "directives.yaml"
 BIOMARKERS_FILE = DATA_DIR / "strategic" / "biomarkers.yaml"
 USER_PROFILE_FILE = DATA_DIR / "tactical" / "user_profile.yaml"
@@ -491,7 +492,8 @@ def build_health_review_system_prompt() -> str:
 - Не обновляй strategy.md, directives.yaml или biomarkers.yaml.
 - Используй только Health review context.
 - Если данных мало, честно скажи, каких данных не хватает.
-- Дай недельный review: summary, nutrition compliance, training compliance, sleep/recovery, weight trend, risks, decision, next 3 actions.
+- Если мало логов, пиши "мало daily logs"; не говори, что biomarkers/ЭХОКГ/LDL отсутствуют, если biomarkers.yaml был загружен.
+- Формат review: 1. Week / phase / review type; 2. Data coverage; 3. Nutrition; 4. Training; 5. Sleep / recovery; 6. Weight trend; 7. Risks; 8. Decision; 9. Next 3 actions.
 - Decision должен быть одним из: keep / adjust / deload / maintain.
 - Формат без больших таблиц.
 """
@@ -524,7 +526,7 @@ def call_anthropic_health_review(review_context: str, user_text: str) -> str:
     client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
     message = client.messages.create(
         model=ANTHROPIC_MODEL,
-        max_tokens=1000,
+        max_tokens=800,
         temperature=0.2,
         system=build_health_review_system_prompt(),
         messages=[
@@ -538,6 +540,35 @@ def call_anthropic_health_review(review_context: str, user_text: str) -> str:
         ],
     )
     return "".join(block.text for block in message.content if block.type == "text").strip()
+
+
+def split_telegram_message(text: str, limit: int = TELEGRAM_SAFE_MESSAGE_LIMIT) -> list[str]:
+    if len(text) <= limit:
+        return [text]
+
+    chunks: list[str] = []
+    remaining = text
+    while len(remaining) > limit:
+        split_at = remaining.rfind("\n\n", 0, limit)
+        if split_at < limit // 2:
+            split_at = remaining.rfind("\n", 0, limit)
+        if split_at < limit // 2:
+            split_at = remaining.rfind(" ", 0, limit)
+        if split_at < limit // 2:
+            split_at = limit
+        chunks.append(remaining[:split_at].strip())
+        remaining = remaining[split_at:].strip()
+
+    if remaining:
+        chunks.append(remaining)
+    return chunks
+
+
+async def reply_text_safely(update: Update, text: str) -> None:
+    if not update.message:
+        return
+    for chunk in split_telegram_message(text):
+        await update.message.reply_text(chunk)
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -560,9 +591,10 @@ async def health_review(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     review_context, context_files = build_health_review_context()
     if not os.getenv("ANTHROPIC_API_KEY"):
         files_text = "\n".join(f"- {path}" for path in context_files)
-        await update.message.reply_text(
+        await reply_text_safely(
+            update,
             "Health review context собран, но Anthropic-ответ выключен: добавь ANTHROPIC_API_KEY в .env.\n\n"
-            f"Файлы:\n{files_text}"
+            f"Файлы:\n{files_text}",
         )
         return
 
@@ -575,7 +607,7 @@ async def health_review(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     except Exception as exc:
         answer = f"Не смог выполнить /health-review: {exc}"
 
-    await update.message.reply_text(answer)
+    await reply_text_safely(update, answer)
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -583,6 +615,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     text = update.message.text.strip()
+    if re.match(r"^/health[-_]review(?:@\w+)?(?:\s|$)", text):
+        return
+
     username = update.effective_user.username if update.effective_user else None
     entry_type, daily_log = append_log_entry(text, username)
 
