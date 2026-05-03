@@ -25,15 +25,19 @@ TIMEZONE = ZoneInfo(os.getenv("HEALTH_OS_TIMEZONE", "Asia/Omsk"))
 ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-3-5-haiku-latest")
 CONTEXT_FILE_SUFFIXES = {".yaml", ".yml", ".md", ".txt"}
 MAX_KNOWLEDGE_FILES = 3
-CORE_CONTEXT_FILES = (
-    BASE_DIR / "CLAUDE.md",
-    DATA_DIR / "strategic" / "directives.yaml",
-    DATA_DIR / "strategic" / "biomarkers.yaml",
-    DATA_DIR / "tactical" / "user_profile.yaml",
-    DATA_DIR / "tactical" / "strategy.md",
-    DATA_DIR / "tactical" / "training" / "program.yaml",
-    DATA_DIR / "tactical" / "nutrition" / "meals.yaml",
-)
+DIRECTIVES_FILE = DATA_DIR / "strategic" / "directives.yaml"
+BIOMARKERS_FILE = DATA_DIR / "strategic" / "biomarkers.yaml"
+USER_PROFILE_FILE = DATA_DIR / "tactical" / "user_profile.yaml"
+STRATEGY_FILE = DATA_DIR / "tactical" / "strategy.md"
+PROGRAM_FILE = DATA_DIR / "tactical" / "training" / "program.yaml"
+MEALS_FILE = DATA_DIR / "tactical" / "nutrition" / "meals.yaml"
+RUNTIME_CONTEXT_INSTRUCTIONS = """Coach runtime boundaries:
+- Use current Health OS data only; unknown means data is missing.
+- Directives override preferences.
+- Coach reads context, answers from the current plan, and helps with today's daily log.
+- Coach does not update strategic files; labs/tests are prepared for /health-labs or strategic review.
+- Keep answers concise: вывод -> что значит для Roman -> 1-3 действия.
+"""
 KNOWLEDGE_TOPIC_DIRS = {
     "sleep": KNOWLEDGE_DIR / "sleep",
     "caffeine": KNOWLEDGE_DIR / "caffeine",
@@ -67,23 +71,80 @@ def load_text_file(path: Path) -> str:
 
 def load_health_context(user_text: str | None = None, daily_log: dict | None = None) -> str:
     parts: list[str] = []
+    intent = detect_intent(user_text or "")
 
-    for path in CORE_CONTEXT_FILES:
+    parts.append(f"## Runtime Coach boundaries\n{RUNTIME_CONTEXT_INSTRUCTIONS}")
+
+    for path in context_files_for_intent(intent):
         if not should_include_context_file(path):
             continue
         rel_path = path.relative_to(BASE_DIR)
         parts.append(f"## {rel_path}\n{load_text_file(path)}")
 
-    log_data = daily_log or read_daily_log()
-    log_rel_path = log_path(log_data.get("date") or today_str()).relative_to(BASE_DIR)
-    log_text = yaml.safe_dump(log_data, allow_unicode=True, sort_keys=False)
-    parts.append(f"## {log_rel_path}\n{log_text}")
+    if should_include_daily_log(intent):
+        log_data = daily_log or read_daily_log()
+        log_rel_path = log_path(log_data.get("date") or today_str()).relative_to(BASE_DIR)
+        log_text = yaml.safe_dump(log_data, allow_unicode=True, sort_keys=False)
+        parts.append(f"## {log_rel_path}\n{log_text}")
 
-    for path in retrieve_knowledge_files(user_text or ""):
+    for path in knowledge_files_for_intent(intent, user_text or ""):
         rel_path = path.relative_to(BASE_DIR)
         parts.append(f"## Curated knowledge retrieved: {rel_path}\n{load_text_file(path)}")
 
     return "\n\n".join(parts) if parts else "No Health OS data files found."
+
+
+def detect_intent(text: str) -> str:
+    normalized = text.lower()
+    if re.search(r"(сон|sleep|спал\w*|бессонниц\w*|проснул\w*|л[её]г|выспал\w*|восстановлен\w*|сауна|баня|стресс|nsdr)", normalized):
+        return "sleep_recovery"
+    if re.search(r"(анализ\w*|apob|ldl|hdl|hba1c|инсулин|эхо|эхокг|узи|мрт|кт|imaging|липид\w*|биомаркер\w*)", normalized, re.IGNORECASE):
+        return "biomarkers_imaging"
+    if re.search(r"(трен\w*|зал|бег\w*|кардио|zone|зон\w*|ходьб\w*|workout|gym|упражнен\w*)", normalized):
+        return "training"
+    if re.search(r"(еда|ел|ела|съел\w*|завтрак\w*|обед\w*|ужин\w*|перекус\w*|meal|ate|food|омлет|калори\w*|белок)", normalized):
+        return "meal"
+    return "general"
+
+
+def context_files_for_intent(intent: str) -> tuple[Path, ...]:
+    if intent == "meal":
+        return (DIRECTIVES_FILE, USER_PROFILE_FILE, STRATEGY_FILE, MEALS_FILE)
+    if intent == "training":
+        return (DIRECTIVES_FILE, USER_PROFILE_FILE, STRATEGY_FILE, PROGRAM_FILE)
+    if intent == "sleep_recovery":
+        return (DIRECTIVES_FILE, USER_PROFILE_FILE, STRATEGY_FILE)
+    if intent == "biomarkers_imaging":
+        return (DIRECTIVES_FILE, USER_PROFILE_FILE, BIOMARKERS_FILE)
+    return (USER_PROFILE_FILE, STRATEGY_FILE)
+
+
+def should_include_daily_log(intent: str) -> bool:
+    return intent in {"meal", "training", "sleep_recovery", "general"}
+
+
+def knowledge_files_for_intent(intent: str, user_text: str) -> list[Path]:
+    if intent not in {"sleep_recovery", "biomarkers_imaging"}:
+        return []
+    return retrieve_knowledge_files(user_text)
+
+
+def context_file_labels(user_text: str, daily_log: dict | None = None) -> list[str]:
+    intent = detect_intent(user_text)
+    labels = ["Runtime Coach boundaries"]
+    labels.extend(
+        path.relative_to(BASE_DIR).as_posix()
+        for path in context_files_for_intent(intent)
+        if should_include_context_file(path)
+    )
+    if should_include_daily_log(intent):
+        log_data = daily_log or read_daily_log()
+        labels.append(log_path(log_data.get("date") or today_str()).relative_to(BASE_DIR).as_posix())
+    labels.extend(
+        f"Curated knowledge retrieved: {path.relative_to(BASE_DIR).as_posix()}"
+        for path in knowledge_files_for_intent(intent, user_text)
+    )
+    return labels
 
 
 def should_include_context_file(path: Path) -> bool:
@@ -374,12 +435,15 @@ def main() -> None:
     if "--check" in sys.argv:
         check_text = " ".join(arg for arg in sys.argv[1:] if arg != "--check")
         context = load_health_context(check_text)
+        detected_intent = detect_intent(check_text)
         selected_topics = select_knowledge_topics(check_text)
         selected_files = [
             path.relative_to(BASE_DIR).as_posix()
-            for path in retrieve_knowledge_files(check_text)
+            for path in knowledge_files_for_intent(detected_intent, check_text)
         ]
         print(f"bot.py import OK; context bytes: {len(context)}")
+        print(f"detected intent: {detected_intent}")
+        print(f"context files: {context_file_labels(check_text)}")
         print(f"selected topics: {selected_topics}")
         print(f"selected knowledge files: {selected_files}")
         return
