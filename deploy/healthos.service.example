@@ -1,0 +1,15 @@
+[Unit]
+Description=Health OS Telegram Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/healthos
+ExecStart=/opt/healthos/.venv/bin/python /opt/healthos/bot.py
+Restart=always
+RestartSec=5
+EnvironmentFile=/opt/healthos/.env
+
+[Install]
+WantedBy=multi-user.target
