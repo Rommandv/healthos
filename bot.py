@@ -364,6 +364,70 @@ def build_health_review_context() -> tuple[str, list[str]]:
     return "\n\n".join(parts), context_files
 
 
+def has_sleep_data(log_data: dict) -> bool:
+    sleep = log_data.get("sleep") or {}
+    return any(
+        sleep.get(field) not in (None, "", [])
+        for field in ("hours", "quality", "bed_time", "wake_time")
+    )
+
+
+def plural_ru(count: int, one: str, few: str, many: str) -> str:
+    if count % 10 == 1 and count % 100 != 11:
+        return one
+    if count % 10 in (2, 3, 4) and count % 100 not in (12, 13, 14):
+        return few
+    return many
+
+
+def display_phase(phase: str) -> str:
+    if phase == "14-day recomposition validation":
+        return "14-дневная валидация рекомпозиции"
+    if phase == "unknown":
+        return "не определена"
+    return phase
+
+
+def build_health_review_brief() -> str:
+    now = datetime.now(TIMEZONE)
+    existing_logs, _ = load_existing_recent_logs()
+    coverage = len(existing_logs)
+    data_status = "достаточно" if coverage >= 5 else "данных недостаточно"
+    decision = "maintain"
+
+    meals_count = sum(len(log_data.get("meals") or []) for _, log_data in existing_logs)
+    training_count = sum(
+        len(log_data.get("training") or []) for _, log_data in existing_logs
+    )
+    sleep_logged = any(has_sleep_data(log_data) for _, log_data in existing_logs)
+    weight_logged = any(
+        log_data.get("weight_morning") not in (None, "", [])
+        for _, log_data in existing_logs
+    )
+
+    if coverage < 5:
+        risk_1 = "Данных мало: сначала восстановить логирование."
+    else:
+        risk_1 = "Следить, чтобы решение не опиралось на единичные дни."
+
+    return "\n".join(
+        [
+            f"Ревью здоровья — неделя {now.isocalendar().week}",
+            f"Фаза: {display_phase(current_phase())}",
+            f"Покрытие: {coverage}/7 дней, {data_status}",
+            f"Решение: {decision}",
+            "",
+            "Сигналы:",
+            f"- Питание: {meals_count} {plural_ru(meals_count, 'запись', 'записи', 'записей')} еды; тренировки: {training_count} {plural_ru(training_count, 'запись', 'записи', 'записей')}.",
+            f"- Сон: {'есть записи' if sleep_logged else 'нет записей'}; вес: {'есть измерения' if weight_logged else 'нет измерений'}.",
+            "Риски:",
+            f"- {risk_1}",
+            "Следующие 3 шага:",
+            "1. Логировать еду/сон/вес/тренировки. 2. Не менять режим до 5-7 дней данных. 3. Повторить /health-review.",
+        ]
+    )
+
+
 def write_daily_log(data: dict) -> None:
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
     path = log_path(data["date"])
@@ -623,26 +687,7 @@ async def health_review(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if not update.message:
         return
 
-    review_context, context_files = build_health_review_context()
-    if not os.getenv("ANTHROPIC_API_KEY"):
-        files_text = "\n".join(f"- {path}" for path in context_files)
-        await reply_text_safely(
-            update,
-            "Health review context собран, но Anthropic-ответ выключен: добавь ANTHROPIC_API_KEY в .env.\n\n"
-            f"Файлы:\n{files_text}",
-        )
-        return
-
-    try:
-        answer = await asyncio.to_thread(
-            call_anthropic_health_review,
-            review_context,
-            update.message.text or "/health-review",
-        )
-    except Exception as exc:
-        answer = f"Не смог выполнить /health-review: {exc}"
-
-    await reply_text_safely(update, answer)
+    await reply_text_safely(update, build_health_review_brief())
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
