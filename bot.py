@@ -853,10 +853,10 @@ def format_nutrition(values: dict[str, int | None]) -> str:
     protein = values.get("protein_g")
     fat = values.get("fat_g")
     carbs = values.get("carbs_g")
-    calories_text = f"~{calories} ккал" if calories is not None else "~ккал уточняю"
+    calories_text = f"~{calories} ккал" if calories is not None else "~ккал без точных данных"
 
     if any(item is None for item in (protein, fat, carbs)):
-        return f"{calories_text}\nБ/Ж/У: уточняю"
+        return f"{calories_text}\nБ/Ж/У: примерные, без точных данных"
 
     return f"{calories_text}\nБ {protein} г / Ж {fat} г / У {carbs} г"
 
@@ -871,7 +871,10 @@ def format_remaining(targets: dict[str, int], totals: dict[str, int]) -> str:
 
 def format_partial_remaining(targets: dict[str, int], totals: dict[str, int]) -> str:
     remaining_kcal = max(targets.get("calories", 0) - totals.get("calories", 0), 0)
-    return f"~{remaining_kcal} ккал\nБ/Ж/У: уточню после оценки"
+    return (
+        f"~{remaining_kcal} ккал\n"
+        "Макросы: посчитаю, если дашь КБЖУ или точную позицию из меню"
+    )
 
 
 def clean_next_step(text: str) -> str:
