@@ -501,6 +501,21 @@ def is_food_message(text: str) -> bool:
     return bool(re.search(food_pattern, normalized, re.IGNORECASE))
 
 
+def is_multi_item_food(text: str) -> bool:
+    normalized = text.lower()
+    food_terms = re.findall(
+        r"(?<!\w)("
+        r"омлет|яйц\w*|тост|бургер|картошк\w*|рис|куриц\w*|творог|йогурт|"
+        r"хлеб|вареник\w*|соус|морожен\w*|кола|салат|суп|мясо|рыба"
+        r")(?!\w)",
+        normalized,
+        re.IGNORECASE,
+    )
+    if len(food_terms) >= 2:
+        return True
+    return bool(food_terms and re.search(r"(\+|,|;|\sи\s|\sс\s)", normalized))
+
+
 def extract_macro_letter(text: str, marker: str) -> int | None:
     match = re.search(
         rf"(?:^|[\s/|,;]){marker}\s*[:=-]?\s*(\d{{1,3}})",
@@ -519,7 +534,37 @@ def extract_nutrition_estimate(text: str) -> dict[str, int | None]:
     }
 
 
-def extract_meal_estimate(model_answer: str) -> dict[str, int | None]:
+def approximate_multi_item_estimate() -> dict[str, int | None]:
+    return {
+        "calories": None,
+        "calories_min": 700,
+        "calories_max": 950,
+        "protein_g": None,
+        "fat_g": None,
+        "carbs_g": None,
+    }
+
+
+def extract_total_lines(model_answer: str) -> list[str]:
+    return [
+        line
+        for line in model_answer.splitlines()
+        if re.search(r"(итого|всего|total|суммарно|за при[её]м)", line, re.IGNORECASE)
+    ]
+
+
+def extract_meal_estimate(model_answer: str, user_text: str = "") -> dict[str, int | None]:
+    user_estimate = extract_nutrition_estimate(user_text)
+    if complete_nutrition(user_estimate):
+        return user_estimate
+
+    total_lines = extract_total_lines(model_answer)
+    if total_lines:
+        return extract_nutrition_estimate("\n".join(total_lines))
+
+    if is_multi_item_food(user_text):
+        return approximate_multi_item_estimate()
+
     safe_lines: list[str] = []
     for line in model_answer.splitlines():
         normalized = line.lower()
@@ -850,10 +895,15 @@ def meal_totals(
 
 def format_nutrition(values: dict[str, int | None]) -> str:
     calories = values.get("calories")
+    calories_min = values.get("calories_min")
+    calories_max = values.get("calories_max")
     protein = values.get("protein_g")
     fat = values.get("fat_g")
     carbs = values.get("carbs_g")
-    calories_text = f"~{calories} ккал" if calories is not None else "~ккал без точных данных"
+    if calories_min is not None and calories_max is not None:
+        calories_text = f"~{calories_min}–{calories_max} ккал"
+    else:
+        calories_text = f"~{calories} ккал" if calories is not None else "~ккал без точных данных"
 
     if any(item is None for item in (protein, fat, carbs)):
         return f"{calories_text}\nБ/Ж/У: примерные, без точных данных"
@@ -870,9 +920,17 @@ def format_remaining(targets: dict[str, int], totals: dict[str, int]) -> str:
 
 
 def format_partial_remaining(targets: dict[str, int], totals: dict[str, int]) -> str:
-    remaining_kcal = max(targets.get("calories", 0) - totals.get("calories", 0), 0)
+    min_total = totals.get("calories_min")
+    max_total = totals.get("calories_max")
+    if min_total is not None and max_total is not None:
+        remaining_min = max(targets.get("calories", 0) - max_total, 0)
+        remaining_max = max(targets.get("calories", 0) - min_total, 0)
+        calories_text = f"~{remaining_min}–{remaining_max} ккал"
+    else:
+        remaining_kcal = max(targets.get("calories", 0) - totals.get("calories", 0), 0)
+        calories_text = f"~{remaining_kcal} ккал"
     return (
-        f"~{remaining_kcal} ккал\n"
+        f"{calories_text}\n"
         "Макросы: посчитаю, если дашь КБЖУ или точную позицию из меню"
     )
 
@@ -906,7 +964,7 @@ def format_meal_response(
     description = meal_description(daily_log, user_text)
     header = "Обновил запись" if entry_type == "meal_update" else "Записал"
     estimate_label = "Новая оценка" if entry_type == "meal_update" else "Оценка"
-    estimate = extract_meal_estimate(model_answer)
+    estimate = extract_meal_estimate(model_answer, user_text)
 
     if meals:
         latest = meals[-1]
@@ -919,11 +977,18 @@ def format_meal_response(
     if all_complete and meals:
         remaining_line = format_remaining(targets, totals)
     else:
-        current_totals = {
-            field: int(estimate[field]) if estimate.get(field) is not None else 0
-            for field in ("calories", "protein_g", "fat_g", "carbs_g")
+        fallback_totals = dict(totals) if included_any_meal else {
+            "calories": 0,
+            "protein_g": 0,
+            "fat_g": 0,
+            "carbs_g": 0,
         }
-        fallback_totals = totals if included_any_meal else current_totals
+        if estimate.get("calories_min") is not None and estimate.get("calories_max") is not None:
+            base_calories = fallback_totals.get("calories", 0)
+            fallback_totals["calories_min"] = base_calories + int(estimate["calories_min"])
+            fallback_totals["calories_max"] = base_calories + int(estimate["calories_max"])
+        elif estimate.get("calories") is not None:
+            fallback_totals["calories"] = fallback_totals.get("calories", 0) + int(estimate["calories"])
         remaining_line = format_partial_remaining(targets, fallback_totals)
 
     return "\n\n".join(
