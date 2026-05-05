@@ -519,6 +519,17 @@ def extract_nutrition_estimate(text: str) -> dict[str, int | None]:
     }
 
 
+def extract_meal_estimate(model_answer: str) -> dict[str, int | None]:
+    safe_lines: list[str] = []
+    for line in model_answer.splitlines():
+        normalized = line.lower()
+        if re.search(r"(остаток|следующ|записал|обновил|дневн|лог|замет)", normalized):
+            continue
+        if re.search(r"(оценк|ккал|калори|б\s*\d|ж\s*\d|у\s*\d|бел\w*|жир\w*|углев)", normalized):
+            safe_lines.append(line)
+    return extract_nutrition_estimate("\n".join(safe_lines))
+
+
 def complete_nutrition(values: dict) -> bool:
     return all(
         values.get(field) is not None
@@ -575,7 +586,11 @@ def update_recent_meal_if_clarification(
     if elapsed_min is None or elapsed_min > 30:
         return False
 
-    last_meal["description"] = f"{last_meal.get('description')}; уточнение: {text}"
+    previous_description = str(last_meal.get("description") or "").strip()
+    if previous_description and previous_description.lower() != "none":
+        last_meal["description"] = f"{previous_description}; уточнение: {text}"
+    else:
+        last_meal["description"] = text.strip() or "приём пищи"
     last_meal["updated_at"] = now.strftime("%H:%M")
     last_meal["updated_by"] = username
 
@@ -782,19 +797,26 @@ def nutrition_targets() -> dict[str, int]:
     }
 
 
+def normalize_food_description(value: str | None, fallback: str) -> str:
+    description = str(value or "").strip()
+    if not description or description.lower() in {"none", "null"}:
+        description = fallback.strip()
+    return description or "приём пищи"
+
+
 def meal_description(daily_log: dict, fallback: str) -> str:
     meals = daily_log.get("meals") or []
     if not meals:
-        return fallback.strip()
-    description = str(meals[-1].get("description") or "").strip()
-    return description or fallback.strip() or "приём пищи"
+        return normalize_food_description(None, fallback)
+    return normalize_food_description(meals[-1].get("description"), fallback)
 
 
 def meal_totals(
     meals: list[dict], current_estimate: dict[str, int | None]
-) -> tuple[dict[str, int], bool]:
+) -> tuple[dict[str, int], bool, bool]:
     totals = {"calories": 0, "protein_g": 0, "fat_g": 0, "carbs_g": 0}
     all_complete = True
+    included_any_meal = False
 
     for index, meal in enumerate(meals):
         values = {
@@ -815,10 +837,11 @@ def meal_totals(
             all_complete = False
             continue
 
+        included_any_meal = True
         for field in totals:
             totals[field] += int(values[field])
 
-    return totals, all_complete
+    return totals, all_complete, included_any_meal
 
 
 def format_nutrition(values: dict[str, int | None]) -> str:
@@ -860,7 +883,7 @@ def format_meal_response(
     description = meal_description(daily_log, user_text)
     header = "Обновил запись" if entry_type == "meal_update" else "Записал"
     estimate_label = "Новая оценка" if entry_type == "meal_update" else "Оценка"
-    estimate = extract_nutrition_estimate(model_answer)
+    estimate = extract_meal_estimate(model_answer)
 
     if meals:
         latest = meals[-1]
@@ -869,7 +892,7 @@ def format_meal_response(
                 estimate[field] = int(latest[field])
 
     targets = nutrition_targets()
-    totals, all_complete = meal_totals(meals, estimate)
+    totals, all_complete, included_any_meal = meal_totals(meals, estimate)
     if all_complete and meals:
         remaining_line = format_remaining(targets, totals)
     else:
@@ -877,9 +900,10 @@ def format_meal_response(
             field: int(estimate[field]) if estimate.get(field) is not None else 0
             for field in ("calories", "protein_g", "fat_g", "carbs_g")
         }
+        fallback_totals = totals if included_any_meal else current_totals
         remaining_line = (
-            "По текущему логу вижу только этот приём. Остаток после него: "
-            f"{format_remaining(targets, current_totals)}"
+            "пока считаю только доступные КБЖУ — "
+            f"{format_remaining(targets, fallback_totals)}"
         )
 
     return "\n".join(
