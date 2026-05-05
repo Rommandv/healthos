@@ -853,14 +853,12 @@ def format_nutrition(values: dict[str, int | None]) -> str:
     protein = values.get("protein_g")
     fat = values.get("fat_g")
     carbs = values.get("carbs_g")
+    calories_text = f"~{calories} ккал" if calories is not None else "~ккал уточняю"
 
-    if calories is not None and any(item is None for item in (protein, fat, carbs)):
-        return f"~{calories} ккал | Б/Ж/У уточняю"
+    if any(item is None for item in (protein, fat, carbs)):
+        return f"{calories_text}\nБ/Ж/У: уточняю"
 
-    def value(item: int | None) -> str:
-        return str(item) if item is not None else "уточняю"
-
-    return f"{value(calories)} ккал | Б {value(protein)} г | Ж {value(fat)} г | У {value(carbs)} г"
+    return f"{calories_text}\nБ {protein} г / Ж {fat} г / У {carbs} г"
 
 
 def format_remaining(targets: dict[str, int], totals: dict[str, int]) -> str:
@@ -873,7 +871,16 @@ def format_remaining(targets: dict[str, int], totals: dict[str, int]) -> str:
 
 def format_partial_remaining(targets: dict[str, int], totals: dict[str, int]) -> str:
     remaining_kcal = max(targets.get("calories", 0) - totals.get("calories", 0), 0)
-    return f"~{remaining_kcal} ккал | Б/Ж/У уточню после оценки"
+    return f"~{remaining_kcal} ккал\nБ/Ж/У: уточню после оценки"
+
+
+def clean_next_step(text: str) -> str:
+    cleaned = re.sub(r"^[\s>*_`#\-•\d.)]+", "", text.strip())
+    cleaned = re.sub(r"\*\*", "", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    parts = re.split(r"(?<=[.!?])\s+", cleaned)
+    cleaned = " ".join(part for part in parts[:2] if part).strip()
+    return cleaned or "Следующий приём собрать вокруг белка."
 
 
 def extract_next_step(model_answer: str, estimate: dict[str, int | None]) -> str:
@@ -881,7 +888,7 @@ def extract_next_step(model_answer: str, estimate: dict[str, int | None]) -> str
     if match:
         first_line = match.group(1).strip().splitlines()[0].strip(" -")
         if first_line:
-            return first_line
+            return clean_next_step(first_line)
 
     protein = estimate.get("protein_g")
     if protein is not None and protein < 25:
@@ -914,17 +921,14 @@ def format_meal_response(
             for field in ("calories", "protein_g", "fat_g", "carbs_g")
         }
         fallback_totals = totals if included_any_meal else current_totals
-        remaining_line = (
-            "пока считаю только доступные КБЖУ — "
-            f"{format_partial_remaining(targets, fallback_totals)}"
-        )
+        remaining_line = format_partial_remaining(targets, fallback_totals)
 
-    return "\n".join(
+    return "\n\n".join(
         [
             f"{header}: {description}",
-            f"{estimate_label}: {format_nutrition(estimate)}",
-            f"Остаток дня: {remaining_line}",
-            f"Следующий шаг: {extract_next_step(model_answer, estimate)}",
+            f"{estimate_label}:\n{format_nutrition(estimate)}",
+            f"Остаток дня:\n{remaining_line}",
+            f"Следующий шаг:\n{extract_next_step(model_answer, estimate)}",
         ]
     )
 
