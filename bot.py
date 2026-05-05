@@ -484,6 +484,31 @@ def extract_carbs(text: str) -> int | None:
     return int(match.group(1)) if match else None
 
 
+def extract_macro_letter(text: str, marker: str) -> int | None:
+    match = re.search(
+        rf"(?:^|[\s/|,;]){marker}\s*[:=-]?\s*(\d{{1,3}})",
+        text,
+        re.IGNORECASE,
+    )
+    return int(match.group(1)) if match else None
+
+
+def extract_nutrition_estimate(text: str) -> dict[str, int | None]:
+    return {
+        "calories": extract_calories(text),
+        "protein_g": extract_protein(text) or extract_macro_letter(text, "б"),
+        "fat_g": extract_fat(text) or extract_macro_letter(text, "ж"),
+        "carbs_g": extract_carbs(text) or extract_macro_letter(text, "у"),
+    }
+
+
+def complete_nutrition(values: dict) -> bool:
+    return all(
+        values.get(field) is not None
+        for field in ("calories", "protein_g", "fat_g", "carbs_g")
+    )
+
+
 def minutes_since_meal(meal: dict, now: datetime, log_date: str) -> float | None:
     meal_time = meal.get("time")
     if not meal_time:
@@ -714,6 +739,137 @@ def build_health_review_system_prompt() -> str:
 """
 
 
+def nutrition_targets() -> dict[str, int]:
+    try:
+        profile = yaml.safe_load(USER_PROFILE_FILE.read_text(encoding="utf-8")) or {}
+    except OSError:
+        profile = {}
+
+    plan = profile.get("current_plan") or {}
+    calculations = profile.get("calculations") or {}
+    macros = calculations.get("macros") or {}
+
+    return {
+        "calories": int(
+            plan.get("calories_kcal_day")
+            or calculations.get("recommended_calories_kcal_day")
+            or 0
+        ),
+        "protein_g": int(plan.get("protein_g_day") or macros.get("protein_g_day") or 0),
+        "fat_g": int(plan.get("fat_g_day") or macros.get("fat_g_day") or 0),
+        "carbs_g": int(plan.get("carbs_g_day") or macros.get("carbs_g_day") or 0),
+    }
+
+
+def meal_description(daily_log: dict, fallback: str) -> str:
+    meals = daily_log.get("meals") or []
+    if not meals:
+        return fallback.strip()
+    description = str(meals[-1].get("description") or "").strip()
+    return description or fallback.strip() or "приём пищи"
+
+
+def meal_totals(
+    meals: list[dict], current_estimate: dict[str, int | None]
+) -> tuple[dict[str, int], bool]:
+    totals = {"calories": 0, "protein_g": 0, "fat_g": 0, "carbs_g": 0}
+    all_complete = True
+
+    for index, meal in enumerate(meals):
+        values = {
+            "calories": meal.get("calories"),
+            "protein_g": meal.get("protein_g"),
+            "fat_g": meal.get("fat_g"),
+            "carbs_g": meal.get("carbs_g"),
+        }
+        if index == len(meals) - 1:
+            values = {
+                field: values.get(field)
+                if values.get(field) is not None
+                else current_estimate.get(field)
+                for field in values
+            }
+
+        if not complete_nutrition(values):
+            all_complete = False
+            continue
+
+        for field in totals:
+            totals[field] += int(values[field])
+
+    return totals, all_complete
+
+
+def format_nutrition(values: dict[str, int | None]) -> str:
+    def value(field: str) -> str:
+        item = values.get(field)
+        return str(item) if item is not None else "нет данных"
+
+    return (
+        f"{value('calories')} kcal / Б {value('protein_g')} / "
+        f"Ж {value('fat_g')} / У {value('carbs_g')}"
+    )
+
+
+def format_remaining(targets: dict[str, int], totals: dict[str, int]) -> str:
+    remaining = {
+        field: max(targets.get(field, 0) - totals.get(field, 0), 0)
+        for field in targets
+    }
+    return format_nutrition(remaining)
+
+
+def extract_next_step(model_answer: str, estimate: dict[str, int | None]) -> str:
+    match = re.search(r"Следующий шаг:\s*(.+)", model_answer, re.IGNORECASE | re.DOTALL)
+    if match:
+        first_line = match.group(1).strip().splitlines()[0].strip(" -")
+        if first_line:
+            return first_line
+
+    protein = estimate.get("protein_g")
+    if protein is not None and protein < 25:
+        return "Следующим приёмом добрать белок."
+    return "Следующий приём собрать вокруг белка и простой порции углеводов."
+
+
+def format_meal_response(
+    model_answer: str, entry_type: str, daily_log: dict, user_text: str
+) -> str:
+    meals = daily_log.get("meals") or []
+    description = meal_description(daily_log, user_text)
+    header = "Обновил запись" if entry_type == "meal_update" else "Записал"
+    estimate = extract_nutrition_estimate(model_answer)
+
+    if meals:
+        latest = meals[-1]
+        for field in ("calories", "protein_g", "fat_g", "carbs_g"):
+            if estimate.get(field) is None and latest.get(field) is not None:
+                estimate[field] = int(latest[field])
+
+    targets = nutrition_targets()
+    totals, all_complete = meal_totals(meals, estimate)
+    if all_complete and meals:
+        remaining_line = format_remaining(targets, totals)
+    else:
+        current_totals = {
+            field: int(estimate[field]) if estimate.get(field) is not None else 0
+            for field in ("calories", "protein_g", "fat_g", "carbs_g")
+        }
+        remaining_line = (
+            "По текущему логу вижу только этот приём. Остаток после него: "
+            f"{format_remaining(targets, current_totals)}"
+        )
+
+    return "\n".join(
+        [
+            f"{header}: {description}",
+            f"Оценка: {format_nutrition(estimate)}",
+            f"Остаток дня: {remaining_line}",
+            f"Следующий шаг: {extract_next_step(model_answer, estimate)}",
+        ]
+    )
+
+
 def call_anthropic(user_text: str, entry_type: str, daily_log: dict) -> str:
     client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
     health_context = load_health_context(user_text, daily_log)
@@ -740,7 +896,10 @@ def call_anthropic(user_text: str, entry_type: str, daily_log: dict) -> str:
             }
         ],
     )
-    return "".join(block.text for block in message.content if block.type == "text").strip()
+    answer = "".join(block.text for block in message.content if block.type == "text").strip()
+    if entry_type in ("meal", "meal_update"):
+        return format_meal_response(answer, entry_type, daily_log, user_text)
+    return answer
 
 
 def call_anthropic_health_review(review_context: str, user_text: str) -> str:
@@ -824,6 +983,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     entry_type, daily_log = append_log_entry(text, username)
 
     if not os.getenv("ANTHROPIC_API_KEY"):
+        if entry_type in ("meal", "meal_update"):
+            await update.message.reply_text(
+                format_meal_response("", entry_type, daily_log, text)
+            )
+            return
         await update.message.reply_text(
             f"Записал: {entry_type}. Anthropic-ответ выключен: добавь ANTHROPIC_API_KEY в .env."
         )
@@ -832,6 +996,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     try:
         answer = await asyncio.to_thread(call_anthropic, text, entry_type, daily_log)
     except Exception as exc:
+        if entry_type in ("meal", "meal_update"):
+            answer = format_meal_response("", entry_type, daily_log, text)
+            await update.message.reply_text(answer)
+            return
         answer = f"Записал: {entry_type}. Не смог получить ответ Anthropic: {exc}"
 
     await update.message.reply_text(answer)
