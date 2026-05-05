@@ -52,7 +52,11 @@ RUNTIME_CONTEXT_INSTRUCTIONS = """Coach runtime boundaries:
   - The user writes food in normal language.
   - Do not ask for grams by default.
   - Estimate using common portions.
-  - For chains like KFC, McDonald's, Burger King, use standard menu portion estimates.
+  - For chains like KFC, McDonald's, Burger King, use conservative standard menu portion estimates.
+  - Do not underestimate fries, sauces, or ice cream.
+  - Do not overestimate protein in fast food.
+  - If exact menu data is unavailable, give a range.
+  - For a KFC-style meal with burger + fries + ice cream + zero drink + sauce, estimate about 650-800 kcal and 12-20 g protein unless exact data is provided.
   - If the user gives exact KBJU, label data, or menu data, use it as source of truth and recalculate.
   - If uncertain, give a range instead of many questions.
   - Ask at most ONE clarification question only if useful logging is impossible without it.
@@ -61,7 +65,7 @@ RUNTIME_CONTEXT_INSTRUCTIONS = """Coach runtime boundaries:
 - sleep_recovery next step must be recovery-only.
 - biomarkers_imaging next step must be data/monitoring-only.
 - Response protocol by intent:
-  - meal/log_food output contract exactly: 1. "Записал:" for a new meal or "Обновил запись:" for meal_update; 2. "Оценка:" kcal / Б / Ж / У; 3. "Остаток дня:" kcal / Б / Ж / У; 4. "Следующий шаг:" one nutrition action. Daily log may inform, but must not hijack the answer. Do not shift to sleep/training/biomarkers unless user explicitly asks.
+  - meal/log_food output contract exactly: 1. "Записал:" for a new meal or "Обновил запись:" for meal_update with a normalized food description; this line must never be empty; 2. "Оценка:" kcal / Б / Ж / У; 3. "Остаток дня:" kcal / Б / Ж / У; 4. "Следующий шаг:" one nutrition action. Daily log may inform, but must not hijack the answer. Do not shift to sleep/training/biomarkers unless user explicitly asks.
   - training output contract: 1. today's training / requested adaptation; 2. intensity/volume decision; 3. what to log after.
   - sleep_recovery output contract: 1. recovery status; 2. training decision today; 3. max 3 recovery actions. Avoid long sleep protocol unless asked.
   - biomarkers_imaging output contract: 1. baseline/current/missing; 2. meaning for Roman; 3. max 3 next steps.
@@ -633,7 +637,10 @@ def build_system_prompt() -> str:
 - Если нужного факта нет в контексте или дневном логе, прямо скажи: "данных нет".
 - Для food logging используй Vlad-style стандарт: пользователь пишет обычным языком, ты оцениваешь через common portions; лучше примерный лог, чем отсутствие лога.
 - Не проси граммы по умолчанию: спрашивай граммы только если пользователь хочет точный трекинг или еда неоднозначна.
-- Для KFC, McDonald's, Burger King и похожих сетей используй standard menu portion estimates.
+- Для KFC, McDonald's, Burger King и похожих сетей используй conservative standard menu portion estimates.
+- Не занижай fries, sauces и ice cream; не завышай protein в fast food.
+- Если точных данных меню нет, давай диапазон.
+- Для KFC-style meal: burger + fries + ice cream + zero drink + sauce обычно считай примерно 650-800 kcal и protein 12-20 g, если нет точных данных.
 - Для домашней еды с количеством используй разумные default portions: eggs, toast, sandwiches, wings, dumplings, yogurt, rice, potatoes.
 - Если пользователь даёт точные КБЖУ, этикетку или данные меню, используй это как source of truth и пересчитай.
 - Если не уверен, дай диапазон и максимум один уточняющий вопрос только если без него невозможно полезно записать.
