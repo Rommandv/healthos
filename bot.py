@@ -65,12 +65,15 @@ RUNTIME_CONTEXT_INSTRUCTIONS = """Coach runtime boundaries:
 - training next step must be training-only.
 - sleep_recovery next step must be recovery-only.
 - biomarkers_imaging next step must be data/monitoring-only.
-- Response protocol by intent:
-  - meal/log_food output contract exactly: 1. "Записал:" for a new meal or "Обновил запись:" for meal_update with a normalized food description; this line must never be empty; 2. "Оценка:" kcal / Б / Ж / У; 3. "Остаток дня:" kcal / Б / Ж / У; 4. "Следующий шаг:" one nutrition action. Daily log may inform, but must not hijack the answer. Do not shift to sleep/training/biomarkers unless user explicitly asks.
-  - training output contract: 1. today's training / requested adaptation; 2. intensity/volume decision; 3. what to log after.
-  - sleep_recovery output contract: 1. recovery status; 2. training decision today; 3. max 3 recovery actions. Avoid long sleep protocol unless asked.
-  - biomarkers_imaging output contract: 1. baseline/current/missing; 2. meaning for Roman; 3. max 3 next steps.
-  - general output contract: 1. conclusion; 2. 1-3 actions or one clarifying question.
+- Core response contracts:
+  - meal_log: "Записал: {normalized_food_description}" -> "Оценка: {kcal} ккал | Б {protein} г | Ж {fat} г | У {carbs} г" -> "Остаток дня: {remaining_kcal} ккал | Б {remaining_protein} г | Ж {remaining_fat} г | У {remaining_carbs} г" -> "Следующий шаг: {one nutrition step}". Description cannot be empty. Do not ask grams by default. Use approximate/range if not exact. Exact KBJU/label/menu data is source of truth. No formula placeholders.
+  - meal_update: "Обновил запись: {normalized_food_description}" -> "Новая оценка: ..." -> "Остаток дня: ..." -> "Следующий шаг: ...". Corrections within 30 minutes update previous meal instead of duplicate. Exact user data is source of truth.
+  - training_today: "Сегодня: {training_name / focus}" -> "План:" with 1-3 numbered items -> "Адаптация: {if needed, otherwise 'полный план'}" -> "Стартуй с: {one first action}". Read program.yaml/current plan. Do not invent new strategy. If data is limited, give the best current plan from available context. Keep it short.
+  - training_adaptation / exercise_replace: "Меняем: {old} -> {new}" -> "Почему: {same movement pattern / equipment / recovery}" -> "Как делать: {sets/reps/RPE}" -> "Дальше: {one action}". Replace within the same movement pattern where possible. Respect banned or temporary avoid exercises. Do not change the whole program without reason.
+  - skip_crisis / behaviorist: "Окей, не сливаем." -> "Что произошло: {brief reflection or one question max}" -> "Минимум сегодня: {small recovery action}" -> "Завтра: {return plan}". Zero judgment. Do not punish with volume. Return Roman to the regime. Max one question.
+  - sleep_recovery: "Вывод: ..." -> "Что это значит: ..." -> "Сегодня делаем:" with 1-3 numbered actions. If sleep <6h, adapt or reduce training. Sleep beats heroics. No sleep lecture.
+  - biomarkers_imaging: "Вывод: ..." -> "Historical baseline / Current state / Target / Missing data:" -> "Действие: ...". No diagnosis, no treatment, doctor-level decisions with a doctor, calm professional tone, no lay medical words.
+  - general: short answer; conclusion first; then 1-3 steps; stay on current user message; do not drift into adjacent domains.
 - Global response rule: stay inside current intent. No unsolicited cross-domain coaching. If adjacent domain matters, mention it in one short sentence after primary answer, not instead of it.
 - Concise Sofi voice: warm, confident, alive, practical.
 """
@@ -675,7 +678,9 @@ def build_system_prompt() -> str:
 - Подтверждай запись только если сообщение уже было сохранено в daily log текущим обработчиком.
 - Coach не обновляет strategic files: data/strategic/biomarkers.yaml и data/strategic/directives.yaml относятся к ролям Analyst/CMO.
 - Если пользователь присылает анализы или тесты, скажи: "Пришли данные — я помогу подготовить их для /health-labs или стратегического review."
-- Default Coach response: вывод -> что это значит для Roman -> 1-3 действия -> optional deeper dive offer.
+- Используй Core response contracts из Runtime Coach boundaries для top scenarios: meal_log, meal_update, training_today, training_adaptation/exercise_replace, skip_crisis/behaviorist, sleep_recovery, biomarkers_imaging, general.
+- Не превращай все ответы в один общий шаблон: применяй контракт только для текущего сценария.
+- Default Coach response для прочих случаев: вывод -> что это значит для Roman -> 1-3 действия -> optional deeper dive offer.
 - Используй меньше заголовков; не пиши длинные лекции и не делай таблицы, если пользователь прямо не попросил.
 - Sofi voice: тёплый, уверенный, живой тон без чрезмерной сухости; можно 1 лёгкий emoji в не-medical части ответа.
 - Medical / biomarkers / imaging response rule: не давай универсальные "идеальные нормы" как абсолютные истины.
@@ -806,8 +811,8 @@ def format_nutrition(values: dict[str, int | None]) -> str:
         return str(item) if item is not None else "нет данных"
 
     return (
-        f"{value('calories')} kcal / Б {value('protein_g')} / "
-        f"Ж {value('fat_g')} / У {value('carbs_g')}"
+        f"{value('calories')} ккал | Б {value('protein_g')} г | "
+        f"Ж {value('fat_g')} г | У {value('carbs_g')} г"
     )
 
 
@@ -838,6 +843,7 @@ def format_meal_response(
     meals = daily_log.get("meals") or []
     description = meal_description(daily_log, user_text)
     header = "Обновил запись" if entry_type == "meal_update" else "Записал"
+    estimate_label = "Новая оценка" if entry_type == "meal_update" else "Оценка"
     estimate = extract_nutrition_estimate(model_answer)
 
     if meals:
@@ -863,7 +869,7 @@ def format_meal_response(
     return "\n".join(
         [
             f"{header}: {description}",
-            f"Оценка: {format_nutrition(estimate)}",
+            f"{estimate_label}: {format_nutrition(estimate)}",
             f"Остаток дня: {remaining_line}",
             f"Следующий шаг: {extract_next_step(model_answer, estimate)}",
         ]
