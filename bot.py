@@ -61,7 +61,7 @@ RUNTIME_CONTEXT_INSTRUCTIONS = """Coach runtime boundaries:
 - sleep_recovery next step must be recovery-only.
 - biomarkers_imaging next step must be data/monitoring-only.
 - Response protocol by intent:
-  - meal/log_food output contract exactly: 1. "Записал:"; 2. "Оценка:" kcal / Б / Ж / У; 3. "Остаток дня:" kcal / Б / Ж / У; 4. "Следующий шаг:" one nutrition action. Daily log may inform, but must not hijack the answer. Do not shift to sleep/training/biomarkers unless user explicitly asks.
+  - meal/log_food output contract exactly: 1. "Записал:" for a new meal or "Обновил запись:" for meal_update; 2. "Оценка:" kcal / Б / Ж / У; 3. "Остаток дня:" kcal / Б / Ж / У; 4. "Следующий шаг:" one nutrition action. Daily log may inform, but must not hijack the answer. Do not shift to sleep/training/biomarkers unless user explicitly asks.
   - training output contract: 1. today's training / requested adaptation; 2. intensity/volume decision; 3. what to log after.
   - sleep_recovery output contract: 1. recovery status; 2. training decision today; 3. max 3 recovery actions. Avoid long sleep protocol unless asked.
   - biomarkers_imaging output contract: 1. baseline/current/missing; 2. meaning for Roman; 3. max 3 next steps.
@@ -575,7 +575,7 @@ def append_log_entry(text: str, username: str | None) -> tuple[str, dict]:
         daily_log, text, username, now_dt
     ):
         write_daily_log(daily_log)
-        return "meal", daily_log
+        return "meal_update", daily_log
 
     if entry_type == "weight":
         daily_log["weight_morning"] = parse_number(text)
@@ -712,6 +712,12 @@ def build_health_review_system_prompt() -> str:
 def call_anthropic(user_text: str, entry_type: str, daily_log: dict) -> str:
     client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
     health_context = load_health_context(user_text, daily_log)
+    entry_note = ""
+    if entry_type == "meal_update":
+        entry_note = (
+            "\nMeal logging action: updated the recent meal entry; "
+            'Telegram response must say "Обновил запись:", not "Записал:" or "записал новую".'
+        )
 
     message = client.messages.create(
         model=ANTHROPIC_MODEL,
@@ -723,7 +729,7 @@ def call_anthropic(user_text: str, entry_type: str, daily_log: dict) -> str:
                 "role": "user",
                 "content": (
                     f"Health OS context:\n{health_context}\n\n"
-                    f"Тип записи: {entry_type}\n\n"
+                    f"Тип записи: {entry_type}{entry_note}\n\n"
                     f"Сообщение пользователя: {user_text}"
                 ),
             }
