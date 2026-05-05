@@ -525,7 +525,11 @@ def extract_meal_estimate(model_answer: str) -> dict[str, int | None]:
         normalized = line.lower()
         if re.search(r"(остаток|следующ|записал|обновил|дневн|лог|замет)", normalized):
             continue
-        if re.search(r"(оценк|ккал|калори|б\s*\d|ж\s*\d|у\s*\d|бел\w*|жир\w*|углев)", normalized):
+        if re.search(
+            r"(оценк|ккал|kcal|cal\b|калори|б\s*:?\s*\d|ж\s*:?\s*\d|у\s*:?\s*\d|"
+            r"бел\w*|жир\w*|углев|protein|fat|carb\w*)",
+            normalized,
+        ):
             safe_lines.append(line)
     return extract_nutrition_estimate("\n".join(safe_lines))
 
@@ -845,14 +849,18 @@ def meal_totals(
 
 
 def format_nutrition(values: dict[str, int | None]) -> str:
-    def value(field: str) -> str:
-        item = values.get(field)
-        return str(item) if item is not None else "нет данных"
+    calories = values.get("calories")
+    protein = values.get("protein_g")
+    fat = values.get("fat_g")
+    carbs = values.get("carbs_g")
 
-    return (
-        f"{value('calories')} ккал | Б {value('protein_g')} г | "
-        f"Ж {value('fat_g')} г | У {value('carbs_g')} г"
-    )
+    if calories is not None and any(item is None for item in (protein, fat, carbs)):
+        return f"~{calories} ккал | Б/Ж/У уточняю"
+
+    def value(item: int | None) -> str:
+        return str(item) if item is not None else "уточняю"
+
+    return f"{value(calories)} ккал | Б {value(protein)} г | Ж {value(fat)} г | У {value(carbs)} г"
 
 
 def format_remaining(targets: dict[str, int], totals: dict[str, int]) -> str:
@@ -861,6 +869,11 @@ def format_remaining(targets: dict[str, int], totals: dict[str, int]) -> str:
         for field in targets
     }
     return format_nutrition(remaining)
+
+
+def format_partial_remaining(targets: dict[str, int], totals: dict[str, int]) -> str:
+    remaining_kcal = max(targets.get("calories", 0) - totals.get("calories", 0), 0)
+    return f"~{remaining_kcal} ккал | Б/Ж/У уточню после оценки"
 
 
 def extract_next_step(model_answer: str, estimate: dict[str, int | None]) -> str:
@@ -903,7 +916,7 @@ def format_meal_response(
         fallback_totals = totals if included_any_meal else current_totals
         remaining_line = (
             "пока считаю только доступные КБЖУ — "
-            f"{format_remaining(targets, fallback_totals)}"
+            f"{format_partial_remaining(targets, fallback_totals)}"
         )
 
     return "\n".join(
