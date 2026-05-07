@@ -534,12 +534,16 @@ def extract_nutrition_estimate(text: str) -> dict[str, int | None]:
     }
 
 
-def approximate_multi_item_estimate() -> dict[str, int | None]:
+def exact_user_kbju_present(text: str) -> bool:
+    return complete_nutrition(extract_nutrition_estimate(text))
+
+
+def approximate_multi_item_estimate(partial_macros: bool = False) -> dict[str, int | None]:
     return {
         "calories": None,
         "calories_min": 650,
         "calories_max": 900,
-        "partial_macros": True,
+        "partial_macros": partial_macros,
         "protein_g": None,
         "fat_g": None,
         "carbs_g": None,
@@ -564,7 +568,7 @@ def extract_meal_estimate(model_answer: str, user_text: str = "") -> dict[str, i
         return extract_nutrition_estimate("\n".join(total_lines))
 
     if is_multi_item_food(user_text):
-        return approximate_multi_item_estimate()
+        return approximate_multi_item_estimate(partial_macros=exact_user_kbju_present(user_text))
 
     user_estimate = extract_nutrition_estimate(user_text)
     if complete_nutrition(user_estimate):
