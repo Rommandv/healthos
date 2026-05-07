@@ -545,8 +545,14 @@ def approximate_multi_item_estimate(partial_macros: bool = False) -> dict[str, i
         "calories_max": 900,
         "partial_macros": partial_macros,
         "protein_g": None,
+        "protein_min": 15,
+        "protein_max": 30,
         "fat_g": None,
+        "fat_min": 25,
+        "fat_max": 45,
         "carbs_g": None,
+        "carbs_min": 70,
+        "carbs_max": 110,
     }
 
 
@@ -912,16 +918,30 @@ def format_nutrition(values: dict[str, int | None]) -> str:
     protein = values.get("protein_g")
     fat = values.get("fat_g")
     carbs = values.get("carbs_g")
+    protein_min = values.get("protein_min")
+    protein_max = values.get("protein_max")
+    fat_min = values.get("fat_min")
+    fat_max = values.get("fat_max")
+    carbs_min = values.get("carbs_min")
+    carbs_max = values.get("carbs_max")
     if calories_min is not None and calories_max is not None:
         calories_text = f"~{calories_min}–{calories_max} ккал"
     else:
         calories_text = f"~{calories} ккал" if calories is not None else "~ккал без точных данных"
 
-    if values.get("partial_macros"):
-        return f"{calories_text}\nБ/Ж/У: частично точные, остальное примерное"
+    if all(
+        item is not None
+        for item in (protein_min, protein_max, fat_min, fat_max, carbs_min, carbs_max)
+    ):
+        return (
+            f"{calories_text}\n"
+            f"Б ~{protein_min}–{protein_max} г / "
+            f"Ж ~{fat_min}–{fat_max} г / "
+            f"У ~{carbs_min}–{carbs_max} г"
+        )
 
     if any(item is None for item in (protein, fat, carbs)):
-        return f"{calories_text}\nБ/Ж/У: примерные, без точных данных"
+        return f"{calories_text}\nКБЖУ: калории примерные, макросы без точных данных"
 
     return f"{calories_text}\nБ {protein} г / Ж {fat} г / У {carbs} г"
 
@@ -937,6 +957,12 @@ def format_remaining(targets: dict[str, int], totals: dict[str, int]) -> str:
 def format_partial_remaining(targets: dict[str, int], totals: dict[str, int]) -> str:
     min_total = totals.get("calories_min")
     max_total = totals.get("calories_max")
+    protein_min = totals.get("protein_min")
+    protein_max = totals.get("protein_max")
+    fat_min = totals.get("fat_min")
+    fat_max = totals.get("fat_max")
+    carbs_min = totals.get("carbs_min")
+    carbs_max = totals.get("carbs_max")
     if min_total is not None and max_total is not None:
         remaining_min = max(targets.get("calories", 0) - max_total, 0)
         remaining_max = max(targets.get("calories", 0) - min_total, 0)
@@ -944,6 +970,24 @@ def format_partial_remaining(targets: dict[str, int], totals: dict[str, int]) ->
     else:
         remaining_kcal = max(targets.get("calories", 0) - totals.get("calories", 0), 0)
         calories_text = f"~{remaining_kcal} ккал"
+
+    if all(
+        item is not None
+        for item in (protein_min, protein_max, fat_min, fat_max, carbs_min, carbs_max)
+    ):
+        remaining_protein_min = max(targets.get("protein_g", 0) - protein_max, 0)
+        remaining_protein_max = max(targets.get("protein_g", 0) - protein_min, 0)
+        remaining_fat_min = max(targets.get("fat_g", 0) - fat_max, 0)
+        remaining_fat_max = max(targets.get("fat_g", 0) - fat_min, 0)
+        remaining_carbs_min = max(targets.get("carbs_g", 0) - carbs_max, 0)
+        remaining_carbs_max = max(targets.get("carbs_g", 0) - carbs_min, 0)
+        return (
+            f"{calories_text}\n"
+            f"Б ~{remaining_protein_min}–{remaining_protein_max} г / "
+            f"Ж ~{remaining_fat_min}–{remaining_fat_max} г / "
+            f"У ~{remaining_carbs_min}–{remaining_carbs_max} г"
+        )
+
     return (
         f"{calories_text}\n"
         "Макросы: точнее посчитаю, если дашь КБЖУ остальных позиций"
@@ -1003,6 +1047,13 @@ def format_meal_response(
             base_calories = fallback_totals.get("calories", 0)
             fallback_totals["calories_min"] = base_calories + int(estimate["calories_min"])
             fallback_totals["calories_max"] = base_calories + int(estimate["calories_max"])
+            for field in ("protein", "fat", "carbs"):
+                min_key = f"{field}_min"
+                max_key = f"{field}_max"
+                if estimate.get(min_key) is not None and estimate.get(max_key) is not None:
+                    base_macro = fallback_totals.get(f"{field}_g", 0)
+                    fallback_totals[min_key] = base_macro + int(estimate[min_key])
+                    fallback_totals[max_key] = base_macro + int(estimate[max_key])
         elif estimate.get("calories") is not None:
             fallback_totals["calories"] = fallback_totals.get("calories", 0) + int(estimate["calories"])
         remaining_line = format_partial_remaining(targets, fallback_totals)
