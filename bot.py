@@ -638,6 +638,30 @@ def looks_like_new_meal(text: str) -> bool:
     )
 
 
+def normalize_clarification_text(text: str) -> str:
+    return re.sub(r"\s+", " ", text.strip().lower())
+
+
+def collapse_duplicate_clarifications(description: str) -> str:
+    parts = [part.strip() for part in description.split("; уточнение:")]
+    if not parts:
+        return description.strip()
+
+    base = parts[0]
+    seen: set[str] = set()
+    clarifications: list[str] = []
+    for part in parts[1:]:
+        normalized = normalize_clarification_text(part)
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        clarifications.append(part)
+
+    if not clarifications:
+        return base.strip() or description.strip()
+    return f"{base.strip()}; уточнение: " + "; уточнение: ".join(clarifications)
+
+
 def update_recent_meal_if_clarification(
     daily_log: dict, text: str, username: str | None, now: datetime
 ) -> bool:
@@ -652,7 +676,15 @@ def update_recent_meal_if_clarification(
 
     previous_description = str(last_meal.get("description") or "").strip()
     if previous_description and previous_description.lower() != "none":
-        last_meal["description"] = f"{previous_description}; уточнение: {text}"
+        collapsed_description = collapse_duplicate_clarifications(previous_description)
+        normalized_description = normalize_clarification_text(collapsed_description)
+        normalized_text = normalize_clarification_text(text)
+        if normalized_text and normalized_text in normalized_description:
+            last_meal["description"] = collapsed_description
+        else:
+            last_meal["description"] = collapse_duplicate_clarifications(
+                f"{collapsed_description}; уточнение: {text}"
+            )
     else:
         last_meal["description"] = text.strip() or "приём пищи"
     last_meal["updated_at"] = now.strftime("%H:%M")
@@ -868,7 +900,7 @@ def normalize_food_description(value: str | None, fallback: str) -> str:
     description = str(value or "").strip()
     if not description or description.lower() in {"none", "null"}:
         description = fallback.strip()
-    return description or "приём пищи"
+    return collapse_duplicate_clarifications(description) or "приём пищи"
 
 
 def meal_description(daily_log: dict, fallback: str) -> str:
