@@ -537,8 +537,9 @@ def extract_nutrition_estimate(text: str) -> dict[str, int | None]:
 def approximate_multi_item_estimate() -> dict[str, int | None]:
     return {
         "calories": None,
-        "calories_min": 700,
-        "calories_max": 950,
+        "calories_min": 650,
+        "calories_max": 900,
+        "partial_macros": True,
         "protein_g": None,
         "fat_g": None,
         "carbs_g": None,
@@ -549,21 +550,25 @@ def extract_total_lines(model_answer: str) -> list[str]:
     return [
         line
         for line in model_answer.splitlines()
-        if re.search(r"(итого|всего|total|суммарно|за при[её]м)", line, re.IGNORECASE)
+        if has_total_marker(line)
     ]
 
 
-def extract_meal_estimate(model_answer: str, user_text: str = "") -> dict[str, int | None]:
-    user_estimate = extract_nutrition_estimate(user_text)
-    if complete_nutrition(user_estimate):
-        return user_estimate
+def has_total_marker(text: str) -> bool:
+    return bool(re.search(r"(итого|всего|total|суммарно|за при[её]м)", text, re.IGNORECASE))
 
-    total_lines = extract_total_lines(model_answer)
+
+def extract_meal_estimate(model_answer: str, user_text: str = "") -> dict[str, int | None]:
+    total_lines = extract_total_lines(model_answer) + extract_total_lines(user_text)
     if total_lines:
         return extract_nutrition_estimate("\n".join(total_lines))
 
     if is_multi_item_food(user_text):
         return approximate_multi_item_estimate()
+
+    user_estimate = extract_nutrition_estimate(user_text)
+    if complete_nutrition(user_estimate):
+        return user_estimate
 
     safe_lines: list[str] = []
     for line in model_answer.splitlines():
@@ -642,6 +647,9 @@ def update_recent_meal_if_clarification(
         last_meal["description"] = text.strip() or "приём пищи"
     last_meal["updated_at"] = now.strftime("%H:%M")
     last_meal["updated_by"] = username
+
+    if is_multi_item_food(last_meal["description"]) and not has_total_marker(text):
+        return True
 
     calories = extract_calories(text)
     protein = extract_protein(text)
@@ -905,6 +913,9 @@ def format_nutrition(values: dict[str, int | None]) -> str:
     else:
         calories_text = f"~{calories} ккал" if calories is not None else "~ккал без точных данных"
 
+    if values.get("partial_macros"):
+        return f"{calories_text}\nБ/Ж/У: частично точные, остальное примерное"
+
     if any(item is None for item in (protein, fat, carbs)):
         return f"{calories_text}\nБ/Ж/У: примерные, без точных данных"
 
@@ -931,7 +942,7 @@ def format_partial_remaining(targets: dict[str, int], totals: dict[str, int]) ->
         calories_text = f"~{remaining_kcal} ккал"
     return (
         f"{calories_text}\n"
-        "Макросы: посчитаю, если дашь КБЖУ или точную позицию из меню"
+        "Макросы: точнее посчитаю, если дашь КБЖУ остальных позиций"
     )
 
 
@@ -964,7 +975,8 @@ def format_meal_response(
     description = meal_description(daily_log, user_text)
     header = "Обновил запись" if entry_type == "meal_update" else "Записал"
     estimate_label = "Новая оценка" if entry_type == "meal_update" else "Оценка"
-    estimate = extract_meal_estimate(model_answer, user_text)
+    estimate_source = description if entry_type == "meal_update" else user_text
+    estimate = extract_meal_estimate(model_answer, estimate_source)
 
     if meals:
         latest = meals[-1]
