@@ -878,6 +878,11 @@ def meal_description(daily_log: dict, fallback: str) -> str:
     return normalize_food_description(meals[-1].get("description"), fallback)
 
 
+def should_ignore_meal_level_nutrition(meal: dict) -> bool:
+    description = str(meal.get("description") or "")
+    return is_multi_item_food(description) and not has_total_marker(description)
+
+
 def meal_totals(
     meals: list[dict], current_estimate: dict[str, int | None]
 ) -> tuple[dict[str, int], bool, bool]:
@@ -886,12 +891,15 @@ def meal_totals(
     included_any_meal = False
 
     for index, meal in enumerate(meals):
-        values = {
-            "calories": meal.get("calories"),
-            "protein_g": meal.get("protein_g"),
-            "fat_g": meal.get("fat_g"),
-            "carbs_g": meal.get("carbs_g"),
-        }
+        if should_ignore_meal_level_nutrition(meal):
+            values = {"calories": None, "protein_g": None, "fat_g": None, "carbs_g": None}
+        else:
+            values = {
+                "calories": meal.get("calories"),
+                "protein_g": meal.get("protein_g"),
+                "fat_g": meal.get("fat_g"),
+                "carbs_g": meal.get("carbs_g"),
+            }
         if index == len(meals) - 1:
             values = {
                 field: values.get(field)
@@ -1028,9 +1036,10 @@ def format_meal_response(
 
     if meals:
         latest = meals[-1]
-        for field in ("calories", "protein_g", "fat_g", "carbs_g"):
-            if estimate.get(field) is None and latest.get(field) is not None:
-                estimate[field] = int(latest[field])
+        if not should_ignore_meal_level_nutrition(latest):
+            for field in ("calories", "protein_g", "fat_g", "carbs_g"):
+                if estimate.get(field) is None and latest.get(field) is not None:
+                    estimate[field] = int(latest[field])
 
     targets = nutrition_targets()
     totals, all_complete, included_any_meal = meal_totals(meals, estimate)
