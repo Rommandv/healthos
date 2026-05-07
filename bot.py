@@ -139,6 +139,8 @@ def detect_intent(text: str) -> str:
         return "sleep_recovery"
     if re.search(r"(анализ\w*|apob|ldl|hdl|hba1c|инсулин|эхо|эхокг|узи|мрт|кт|imaging|липид\w*|биомаркер\w*)", normalized, re.IGNORECASE):
         return "biomarkers_imaging"
+    if is_training_query_message(text) or is_training_log_message(text):
+        return "training"
     if re.search(r"(трен\w*|зал|бег\w*|кардио|zone|зон\w*|ходьб\w*|workout|gym|упражнен\w*)", normalized):
         return "training"
     if is_food_message(text):
@@ -708,13 +710,50 @@ def update_recent_meal_if_clarification(
     return True
 
 
+def is_training_query_message(text: str) -> bool:
+    normalized = text.lower()
+    training_context = re.search(
+        r"(трен\w*|зал|тренаж[её]р\w*|упражнен\w*|жим|присед|тяга|кардио|zone|зон\w*)",
+        normalized,
+    )
+    query_intent = re.search(
+        r"(\?|что\s+(?:за|делать)|сегодня|делать\??|стоит|можно|чем\s+заменить|"
+        r"заменить|нет\s+нужн\w*|пропустил\w*|плохо\s+спал\w*)",
+        normalized,
+    )
+    sleep_training_question = re.search(
+        r"(плохо\s+спал\w*|сон|спал\w*)", normalized
+    ) and re.search(r"(трен\w*|делать|стоит|можно)", normalized)
+    return bool((training_context and query_intent) or sleep_training_question)
+
+
+def is_training_log_message(text: str) -> bool:
+    normalized = text.lower()
+    completed_training = re.search(
+        r"(сделал\w*|выполнил\w*|закончил\w*|потренил\w*|потренировал\w*|"
+        r"отзанимал\w*|был\s+на\s+трен\w*)",
+        normalized,
+    ) and re.search(r"(трен\w*|full body|upper|lower|zone|зон\w*|кардио|минут)", normalized)
+    exercise_result = re.search(
+        r"(присед\w*|жим\w*|пожал\w*|тяга|станов\w*|row|press|curl|подтяг\w*)",
+        normalized,
+    ) and re.search(r"(\d+\s*[xх×]\s*\d+|\d+\s*подход|\d+\s*кг|\d+\s+на\s+\d+)", normalized)
+    cardio_result = re.search(
+        r"(сделал\w*|выполнил\w*|закончил\w*)\s+\d+\s*минут.*(zone|зон\w*|кардио)",
+        normalized,
+    )
+    return bool(completed_training or exercise_result or cardio_result)
+
+
 def classify_entry(text: str) -> str:
     normalized = text.lower()
+    if is_training_query_message(text):
+        return "training_query"
     if re.search(r"(?<!\w)(вес|weight)(?!\w)", normalized):
         return "weight"
     if re.search(r"(?<!\w)(сон|спал\w*|sleep)(?!\w)", normalized):
         return "sleep"
-    if re.search(r"(?<!\w)(трен\w*|зал|бег\w*|кардио|zone|зон\w*|ходьб\w*|workout|gym)(?!\w)", normalized):
+    if is_training_log_message(text):
         return "training"
     if is_food_message(text):
         return "meal"
@@ -737,6 +776,9 @@ def append_log_entry(text: str, username: str | None) -> tuple[str, dict]:
     ):
         write_daily_log(daily_log)
         return "meal_update", daily_log
+
+    if entry_type == "training_query":
+        return entry_type, daily_log
 
     if entry_type == "weight":
         daily_log["weight_morning"] = parse_number(text)
