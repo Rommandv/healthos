@@ -154,7 +154,7 @@ def context_files_for_intent(intent: str) -> tuple[Path, ...]:
     if intent == "training":
         return (DIRECTIVES_FILE, USER_PROFILE_FILE, STRATEGY_FILE, PROGRAM_FILE)
     if intent == "sleep_recovery":
-        return (DIRECTIVES_FILE, USER_PROFILE_FILE, STRATEGY_FILE)
+        return (DIRECTIVES_FILE, USER_PROFILE_FILE, STRATEGY_FILE, PROGRAM_FILE)
     if intent == "biomarkers_imaging":
         return (DIRECTIVES_FILE, USER_PROFILE_FILE, BIOMARKERS_FILE)
     return (USER_PROFILE_FILE, STRATEGY_FILE)
@@ -165,6 +165,12 @@ def should_include_daily_log(intent: str) -> bool:
 
 
 def knowledge_files_for_intent(intent: str, user_text: str) -> list[Path]:
+    if intent == "training" and re.search(
+        r"(zone\s*2|vo2|max|кардио|аэроб\w*|пульс|endurance|выносливост\w*)",
+        user_text,
+        re.IGNORECASE,
+    ):
+        return retrieve_knowledge_files(user_text)
     if intent not in {"sleep_recovery", "biomarkers_imaging"}:
         return []
     return retrieve_knowledge_files(user_text)
