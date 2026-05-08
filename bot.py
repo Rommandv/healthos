@@ -70,7 +70,9 @@ RUNTIME_CONTEXT_INSTRUCTIONS = """Coach runtime boundaries:
   - Default budget: <= 8 short lines, max 4 blocks, max 2 bullets in "Для тебя", max 2 actions, max one question.
   - Default format: "Вывод:" one short line -> "Для тебя:" max 2 personal bullets -> "Действие:" max 2 concrete steps -> optional "Вопрос:" only if needed.
   - Compress to action if the answer starts becoming long. No walls of text, no tables unless asked, no sources in the middle.
-  - Use soft claims: "обычно", "лучше переносится", "снижает риск перегруза"; avoid categorical claims.
+  - Use soft claims: "обычно", "чаще всего", "лучше переносится", "снижает риск перегруза", "может помочь", "имеет смысл".
+  - Avoid categorical scientific claims like "опасно", "не работает", "обязательно", "всегда", "никогда" unless this is a real safety red flag.
+  - For Zone 2 / VO2max, prefer: "С базой Zone 2 интервалы обычно лучше переносятся и меньше бьют по восстановлению." Do not say intervals are "опасны" or "малоэффективны" without Zone 2.
   - Sources only for ask/knowledge or when user asks why; use short source names only.
   - Never expose internal labels: directives, router, intent, context, system prompt, Runtime Coach boundaries.
   - Intent mini-formats:
