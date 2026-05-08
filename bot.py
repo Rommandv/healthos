@@ -1246,6 +1246,12 @@ async def reply_text_safely(update: Update, text: str) -> None:
         await update.message.reply_text(chunk)
 
 
+def model_error_message(entry_type: str) -> str:
+    if entry_type == "training_query":
+        return "Не смог сейчас собрать ответ по тренировке. Попробуй ещё раз через минуту."
+    return "Не смог получить ответ модели. Попробуй ещё раз через минуту."
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "Health OS на связи. Пиши простыми фразами: что съел, сколько спал, вес или тренировку. "
@@ -1301,19 +1307,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 format_meal_response("", entry_type, daily_log, text)
             )
             return
-        await update.message.reply_text(
-            f"Записал: {entry_type}. Anthropic-ответ выключен: добавь ANTHROPIC_API_KEY в .env."
-        )
+        await update.message.reply_text(model_error_message(entry_type))
         return
 
     try:
         answer = await asyncio.to_thread(call_anthropic, text, entry_type, daily_log)
-    except Exception as exc:
+    except Exception:
         if food_like_message or entry_type in ("meal", "meal_update"):
             answer = format_meal_response("", entry_type, daily_log, text)
             await update.message.reply_text(answer)
             return
-        answer = f"Записал: {entry_type}. Не смог получить ответ Anthropic: {exc}"
+        answer = model_error_message(entry_type)
 
     if food_like_message or entry_type in ("meal", "meal_update"):
         answer = format_meal_response(answer, entry_type, daily_log, text)
