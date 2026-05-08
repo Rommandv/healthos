@@ -1617,6 +1617,50 @@ def current_session_exercise(session: dict, active_training: dict | None) -> dic
     return exercises[index]
 
 
+def exercise_match_terms(exercise: dict) -> list[str]:
+    name = str(exercise.get("name") or "")
+    display_name = display_exercise_name(name)
+    primary_name = primary_display_exercise_name(name)
+    terms = [name, display_name, primary_name]
+    normalized_name = normalize_exercise_name(name)
+    for alias, canonical in EXERCISE_ALIASES.items():
+        if normalize_exercise_name(canonical) in normalized_name or normalize_exercise_name(alias) in normalized_name:
+            terms.append(alias)
+            terms.append(canonical)
+    return list(dict.fromkeys(normalize_exercise_name(term) for term in terms if term))
+
+
+def exercise_matches_text(exercise: dict, text: str) -> bool:
+    normalized_text = normalize_exercise_name(text)
+    if not normalized_text:
+        return False
+    for term in exercise_match_terms(exercise):
+        if term and (normalized_text == term or normalized_text in term or term in normalized_text):
+            return True
+    return False
+
+
+def switch_active_training_exercise(daily_log: dict, text: str) -> dict | None:
+    active = daily_log.get("active_training") or {}
+    session = find_program_session(active.get("session_name"))
+    exercises = session.get("exercises") or []
+    if not exercises:
+        return None
+
+    for index, exercise in enumerate(exercises):
+        if not exercise_matches_text(exercise, text):
+            continue
+        active["exercise_index"] = index
+        active["current_set_index"] = 0
+        daily_log["active_training"] = active
+        return {
+            "session": session,
+            "exercise": exercise,
+            "exercise_index": index,
+        }
+    return None
+
+
 def find_active_training_entry(daily_log: dict, session_name: str) -> dict | None:
     normalized_session = normalize_training_name(session_name)
     for entry in reversed(daily_log.get("training") or []):
@@ -1710,6 +1754,19 @@ def format_next_exercise_response(session: dict, exercise: dict) -> str:
     )
 
 
+def format_training_exercise_switch_response(daily_log: dict) -> str:
+    result = daily_log.get("_active_exercise_switch") or {}
+    exercise = result.get("exercise") or {}
+    exercise_line = format_exercise_plan_line(exercise)
+    return "\n\n".join(
+        [
+            f"Ок, переключаюсь:\n{exercise_line}",
+            "Старт:\n1–2 разминочных подхода, потом рабочий вес.",
+            f"После подхода напиши:\n{training_log_prompt_for_exercise(exercise)}",
+        ]
+    )
+
+
 def advance_active_training_exercise(daily_log: dict) -> str:
     active = daily_log.get("active_training") or {}
     session = find_program_session(active.get("session_name"))
@@ -1769,6 +1826,10 @@ def format_training_set_response(daily_log: dict) -> str:
             f"Дальше:\n{next_step}",
         ]
     )
+
+
+def format_training_set_needs_exercise_response() -> str:
+    return "К какому упражнению записать подход? Напиши название упражнения из программы."
 
 
 def format_exercise_plan_line(exercise: dict) -> str:
@@ -1832,6 +1893,7 @@ def format_training_session_response(daily_log: dict, user_text: str) -> str:
             f"Сегодня:\n{session_name}",
             f"Первое:\n{exercise_line}",
             "Старт:\nРазминка 5–10 мин → 1–2 лёгких разминочных подхода.",
+            "Если начинаешь с другого упражнения — напиши его название.",
             f"После подхода напиши:\n{training_log_prompt_for_exercise(exercise)}",
         ]
     )
@@ -1864,8 +1926,16 @@ def append_log_entry(text: str, username: str | None) -> tuple[str, dict]:
         re.IGNORECASE,
     )
     single_set_data = parse_single_set_log(text)
+    active_training = daily_log.get("active_training")
+    if active_training and not single_set_data and not full_strength_log:
+        switch_result = switch_active_training_exercise(daily_log, text)
+        if switch_result:
+            write_daily_log(daily_log)
+            daily_log["_active_exercise_switch"] = switch_result
+            return "training_exercise_switch", daily_log
+
     if (
-        daily_log.get("active_training")
+        active_training
         and single_set_data
         and not full_strength_log
         and not is_food_message(text)
@@ -1875,6 +1945,9 @@ def append_log_entry(text: str, username: str | None) -> tuple[str, dict]:
             write_daily_log(daily_log)
             daily_log["_last_training_set"] = set_result
             return "training_set", daily_log
+
+    if single_set_data and not active_training and not full_strength_log and not is_food_message(text):
+        return "training_set_needs_exercise", daily_log
 
     should_update_recent_meal = entry_type == "note" or (
         entry_type == "meal"
@@ -2512,6 +2585,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     if entry_type == "training_set":
         await update.message.reply_text(format_training_set_response(daily_log))
+        return
+
+    if entry_type == "training_exercise_switch":
+        await update.message.reply_text(format_training_exercise_switch_response(daily_log))
+        return
+
+    if entry_type == "training_set_needs_exercise":
+        await update.message.reply_text(format_training_set_needs_exercise_response())
         return
 
     if entry_type in ("training", "training_update"):
