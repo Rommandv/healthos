@@ -756,10 +756,108 @@ def is_training_log_message(text: str) -> bool:
         normalized,
     ) and re.search(r"(\d+\s*[xх×]\s*\d+|\d+\s*подход|\d+\s*кг|\d+\s+на\s+\d+)", normalized)
     cardio_result = re.search(
-        r"(сделал\w*|выполнил\w*|закончил\w*)\s+\d+\s*минут.*(zone|зон\w*|кардио)",
+        r"((сделал\w*|выполнил\w*|закончил\w*)\s+)?\d+\s*(мин|минут|minutes).*(zone\s*2|зон\w*|кардио)|"
+        r"(zone\s*2|зон\w*|кардио).*\d+\s*(мин|минут|minutes)",
         normalized,
     )
     return bool(completed_training or exercise_result or cardio_result)
+
+
+def explicit_duration_min(text: str) -> int | None:
+    match = re.search(r"(\d{1,3})\s*(?:мин|минут|minutes)\b", text, re.IGNORECASE)
+    return int(match.group(1)) if match else None
+
+
+def clean_exercise_name(value: str) -> str:
+    cleaned = re.sub(r"^(сделал\w*|выполнил\w*|закончил\w*)\s+", "", value.strip(), flags=re.IGNORECASE)
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
+def parse_training_log(text: str) -> dict:
+    duration_min = explicit_duration_min(text)
+    cardio_match = re.search(
+        r"(?:(?P<duration_a>\d{1,3})\s*(?:мин|минут|minutes)\s*)?"
+        r"(?P<name>(?:zone\s*2|зон\w*\s*2?|кардио)(?:\s+на\s+[\wа-яё -]+)?)"
+        r"(?:.*?(?P<duration_b>\d{1,3})\s*(?:мин|минут|minutes))?",
+        text,
+        re.IGNORECASE,
+    )
+    if cardio_match and duration_min is not None:
+        return {
+            "type": "cardio",
+            "name": clean_exercise_name(cardio_match.group("name")),
+            "duration_min": duration_min,
+            "rpe": None,
+            "exercises": [],
+            "raw": text,
+        }
+
+    detailed_match = re.search(
+        r"(?:сделал\w*\s+|выполнил\w*\s+)?"
+        r"(?P<name>.+?)\s+"
+        r"(?P<sets>\d{1,2})\s*подход\w*\s+"
+        r"(?P<weight>\d{1,3}(?:[.,]\d+)?)\s*кг\s+на\s+"
+        r"(?P<reps>\d{1,2}(?:\s*[,/]\s*\d{1,2})*)",
+        text,
+        re.IGNORECASE,
+    )
+    if detailed_match:
+        weight = float(detailed_match.group("weight").replace(",", "."))
+        reps = [int(item) for item in re.findall(r"\d{1,2}", detailed_match.group("reps"))]
+        sets = [{"weight_kg": weight, "reps": reps[index] if index < len(reps) else None} for index in range(int(detailed_match.group("sets")))]
+        return {
+            "type": "strength",
+            "name": clean_exercise_name(detailed_match.group("name")),
+            "duration_min": None,
+            "rpe": None,
+            "exercises": [
+                {
+                    "name": clean_exercise_name(detailed_match.group("name")),
+                    "sets": sets,
+                    "raw": text,
+                }
+            ],
+            "raw": text,
+        }
+
+    compact_match = re.search(
+        r"(?P<name>.+?)\s+"
+        r"(?P<sets>\d{1,2})\s*[xх×]\s*(?P<reps>\d{1,2})\s+"
+        r"(?P<weight>\d{1,3}(?:[.,]\d+)?)\s*кг",
+        text,
+        re.IGNORECASE,
+    )
+    if compact_match:
+        weight = float(compact_match.group("weight").replace(",", "."))
+        reps = int(compact_match.group("reps"))
+        sets = [{"weight_kg": weight, "reps": reps} for _ in range(int(compact_match.group("sets")))]
+        return {
+            "type": "strength",
+            "name": clean_exercise_name(compact_match.group("name")),
+            "duration_min": None,
+            "rpe": None,
+            "exercises": [
+                {
+                    "name": clean_exercise_name(compact_match.group("name")),
+                    "sets": sets,
+                    "raw": text,
+                }
+            ],
+            "raw": text,
+        }
+
+    return {
+        "type": "cardio"
+        if duration_min is not None and re.search(r"(zone\s*2|зон\w*|кардио)", text, re.IGNORECASE)
+        else "program_session"
+        if re.search(r"(upper|lower|full body|hypertrophy)", text, re.IGNORECASE)
+        else None,
+        "name": clean_exercise_name(text),
+        "duration_min": duration_min,
+        "rpe": None,
+        "exercises": [],
+        "raw": text,
+    }
 
 
 def classify_entry(text: str) -> str:
@@ -809,17 +907,10 @@ def append_log_entry(text: str, username: str | None) -> tuple[str, dict]:
             }
         )
     elif entry_type == "training":
-        daily_log["training"].append(
-            {
-                "time": now,
-                "type": None,
-                "name": text,
-                "duration_min": parse_number(text),
-                "rpe": None,
-                "exercises": [],
-                "logged_by": username,
-            }
-        )
+        training_entry = parse_training_log(text)
+        training_entry["time"] = now
+        training_entry["logged_by"] = username
+        daily_log["training"].append(training_entry)
     elif entry_type == "meal":
         daily_log["meals"].append(
             {
