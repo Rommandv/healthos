@@ -119,6 +119,208 @@ def load_text_file(path: Path) -> str:
         return path.read_text(errors="ignore")
 
 
+def load_yaml_file(path: Path) -> dict:
+    try:
+        return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except OSError:
+        return {}
+
+
+EXERCISE_ALIASES = {
+    "жим ногами": "leg press",
+    "присед": "squat",
+    "румынская тяга": "romanian deadlift",
+    "тяга верхнего блока": "lat pulldown",
+    "жим лежа": "bench press",
+    "жим лёжа": "bench press",
+}
+
+
+def normalize_exercise_name(value: str | None) -> str:
+    normalized = str(value or "").strip().lower().replace("ё", "е")
+    normalized = re.sub(r"[^a-zа-я0-9]+", " ", normalized)
+    return re.sub(r"\s+", " ", normalized).strip()
+
+
+def load_program_exercises() -> list[dict]:
+    program = load_yaml_file(PROGRAM_FILE)
+    exercises: list[dict] = []
+    for session in program.get("schedule") or []:
+        for exercise in session.get("exercises") or []:
+            name = str(exercise.get("name") or "").strip()
+            pattern = str(exercise.get("pattern") or "").strip()
+            if not name or not pattern:
+                continue
+            exercises.append(
+                {
+                    "name": name,
+                    "pattern": pattern,
+                    "sets": exercise.get("sets"),
+                    "reps": exercise.get("reps"),
+                    "rpe": exercise.get("rpe"),
+                    "session": session.get("name"),
+                }
+            )
+    return exercises
+
+
+def exercise_query_terms(exercise_text: str) -> list[str]:
+    normalized = normalize_exercise_name(exercise_text)
+    terms = [normalized] if normalized else []
+    for alias, canonical in EXERCISE_ALIASES.items():
+        if normalize_exercise_name(alias) in normalized:
+            terms.append(normalize_exercise_name(canonical))
+    return list(dict.fromkeys(term for term in terms if term))
+
+
+def resolve_exercise_pattern(exercise_text: str, program_exercises: list[dict]) -> str | None:
+    terms = exercise_query_terms(exercise_text)
+    if not terms:
+        return None
+
+    normalized_program = [
+        (normalize_exercise_name(exercise.get("name")), exercise.get("pattern"))
+        for exercise in program_exercises
+    ]
+
+    for term in terms:
+        for name, pattern in normalized_program:
+            if term == name:
+                return str(pattern)
+
+    for term in terms:
+        for name, pattern in normalized_program:
+            if term in name or name in term:
+                return str(pattern)
+
+    return None
+
+
+def training_forbidden_exercises() -> list[str]:
+    forbidden: list[str] = []
+    for source in (load_yaml_file(DIRECTIVES_FILE), load_yaml_file(USER_PROFILE_FILE)):
+        constraints = source.get("constraints") or {}
+        training_constraints = constraints.get("training") or {}
+        for key in ("banned_exercises", "temporary_avoid"):
+            values = training_constraints.get(key) or constraints.get(key) or []
+            forbidden.extend(str(value) for value in values if value)
+    return list(dict.fromkeys(forbidden))
+
+
+def allowed_replacements_for_pattern(
+    pattern: str | None, program_exercises: list[dict], banned_or_avoid: list[str]
+) -> list[dict]:
+    if not pattern:
+        return []
+    forbidden_terms = [normalize_exercise_name(value) for value in banned_or_avoid]
+    allowed: list[dict] = []
+    seen: set[str] = set()
+    for exercise in program_exercises:
+        if exercise.get("pattern") != pattern:
+            continue
+        normalized_name = normalize_exercise_name(exercise.get("name"))
+        if any(term and (term in normalized_name or normalized_name in term) for term in forbidden_terms):
+            continue
+        if normalized_name in seen:
+            continue
+        seen.add(normalized_name)
+        allowed.append(exercise)
+    return allowed
+
+
+def is_replacement_query(text: str) -> bool:
+    normalized = text.lower()
+    return bool(re.search(r"(чем\s+заменить|заменить|нет\s+нужн)", normalized))
+
+
+def extract_replacement_request(text: str) -> tuple[str | None, str | None]:
+    patterns = (
+        r"заменить\s+(?P<old>.+?)\s+на\s+(?P<candidate>[^?.,;]+)",
+        r"чем\s+заменить\s+(?P<old>[^?.,;]+)",
+        r"(?P<old>[^?.,;]+?)\s*(?:->|→)\s*(?P<candidate>[^?.,;]+)",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if not match:
+            continue
+        old = (match.groupdict().get("old") or "").strip()
+        candidate = (match.groupdict().get("candidate") or "").strip() or None
+        return old or None, candidate
+    return None, None
+
+
+def build_replacement_guard(user_text: str) -> str:
+    if not is_replacement_query(user_text):
+        return ""
+
+    old_exercise, candidate_replacement = extract_replacement_request(user_text)
+    program_exercises = load_program_exercises()
+    forbidden = training_forbidden_exercises()
+    pattern = resolve_exercise_pattern(old_exercise or "", program_exercises)
+    candidate_pattern = resolve_exercise_pattern(candidate_replacement or "", program_exercises)
+    forbidden_terms = [normalize_exercise_name(value) for value in forbidden]
+    candidate_normalized = normalize_exercise_name(candidate_replacement)
+    candidate_forbidden = bool(
+        candidate_normalized
+        and any(
+            term and (term in candidate_normalized or candidate_normalized in term)
+            for term in forbidden_terms
+        )
+    )
+    candidate_allowed = bool(
+        candidate_replacement
+        and pattern
+        and candidate_pattern == pattern
+        and not candidate_forbidden
+    )
+    allowed = allowed_replacements_for_pattern(pattern, program_exercises, forbidden)
+
+    lines = [
+        "Replacement guard:",
+        f"old_exercise: {old_exercise or 'unknown'}",
+        f"candidate_replacement: {candidate_replacement or 'null'}",
+        f"pattern: {pattern or 'unknown'}",
+        f"candidate_pattern: {candidate_pattern or 'unknown'}",
+        f"candidate_allowed: {candidate_allowed if candidate_replacement else 'null'}",
+        "allowed_candidates:",
+    ]
+    lines.extend(
+        f"- {exercise['name']} | sets: {exercise.get('sets')} | reps: {exercise.get('reps')} | rpe: {exercise.get('rpe')}"
+        for exercise in allowed
+    )
+    if not allowed:
+        lines.append("- none")
+    lines.append("forbidden:")
+    lines.extend(f"- {item}" for item in forbidden)
+    if not forbidden:
+        lines.append("- none")
+    lines.extend(
+        [
+            "rule: replacement must stay inside the same movement pattern and must not use forbidden exercises.",
+            "if_pattern_found: suggest only allowed_candidates; do not invent candidates outside this list.",
+            (
+                "if_pattern_unknown: answer exactly: "
+                "Не уверен в паттерне упражнения. Напиши точное название из программы "
+                "или что за движение: squat/hinge/push/pull."
+            ),
+        ]
+    )
+    return "\n".join(lines)
+
+
+def replacement_pattern_unknown_message(user_text: str) -> str | None:
+    if not is_replacement_query(user_text):
+        return None
+    old_exercise, _ = extract_replacement_request(user_text)
+    program_exercises = load_program_exercises()
+    if resolve_exercise_pattern(old_exercise or "", program_exercises):
+        return None
+    return (
+        "Не уверен в паттерне упражнения. Напиши точное название из программы "
+        "или что за движение: squat/hinge/push/pull."
+    )
+
+
 def load_health_context(user_text: str | None = None, daily_log: dict | None = None) -> str:
     parts: list[str] = []
     intent = detect_intent(user_text or "")
@@ -130,6 +332,10 @@ def load_health_context(user_text: str | None = None, daily_log: dict | None = N
             continue
         rel_path = path.relative_to(BASE_DIR)
         parts.append(f"## {rel_path}\n{load_text_file(path)}")
+
+    replacement_guard = build_replacement_guard(user_text or "")
+    if replacement_guard:
+        parts.append(f"## Replacement guard\n{replacement_guard}")
 
     if should_include_daily_log(intent):
         log_data = daily_log or read_daily_log()
@@ -198,6 +404,8 @@ def context_file_labels(user_text: str, daily_log: dict | None = None) -> list[s
     if should_include_daily_log(intent):
         log_data = daily_log or read_daily_log()
         labels.append(log_path(log_data.get("date") or today_str()).relative_to(BASE_DIR).as_posix())
+    if build_replacement_guard(user_text):
+        labels.append("Replacement guard")
     labels.extend(
         f"Curated knowledge retrieved: {path.relative_to(BASE_DIR).as_posix()}"
         for path in knowledge_files_for_intent(intent, user_text)
@@ -728,6 +936,8 @@ def update_recent_meal_if_clarification(
 
 
 def is_training_query_message(text: str) -> bool:
+    if is_replacement_query(text):
+        return True
     normalized = text.lower()
     training_context = re.search(
         r"(трен\w*|зал|тренаж[её]р\w*|упражнен\w*|жим|присед|тяга|кардио|zone|зон\w*)",
@@ -1701,6 +1911,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     if entry_type in ("training", "training_update"):
         await update.message.reply_text(format_training_log_response(entry_type, daily_log))
+        return
+
+    unknown_replacement_message = replacement_pattern_unknown_message(text)
+    if unknown_replacement_message:
+        await update.message.reply_text(unknown_replacement_message)
         return
 
     if not os.getenv("ANTHROPIC_API_KEY"):
