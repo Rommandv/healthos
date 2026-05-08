@@ -25,7 +25,7 @@ KNOWLEDGE_DIR = BASE_DIR / "knowledge"
 LOGS_DIR = DATA_DIR / "tactical" / "logs"
 TIMEZONE = ZoneInfo(os.getenv("HEALTH_OS_TIMEZONE", "Asia/Omsk"))
 ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-3-5-haiku-latest")
-PHOTO_FOOD_ENABLED = os.getenv("PHOTO_FOOD_ENABLED", "false").strip().lower() == "true"
+PHOTO_FOOD_ENABLED = os.getenv("PHOTO_FOOD_ENABLED", "true").strip().lower() == "true"
 CONTEXT_FILE_SUFFIXES = {".yaml", ".yml", ".md", ".txt"}
 MAX_KNOWLEDGE_FILES = 3
 TELEGRAM_SAFE_MESSAGE_LIMIT = 3500
