@@ -860,8 +860,64 @@ def parse_training_log(text: str) -> dict:
     }
 
 
+def minutes_since_training(training_entry: dict, now: datetime, log_date: str) -> float | None:
+    training_time = training_entry.get("time")
+    if not training_time:
+        return None
+    try:
+        training_dt = datetime.fromisoformat(f"{log_date}T{training_time}").replace(
+            tzinfo=TIMEZONE
+        )
+    except ValueError:
+        return None
+    return (now - training_dt).total_seconds() / 60
+
+
 def normalize_training_name(value: str | None) -> str:
     return re.sub(r"\s+", " ", str(value or "").strip().lower())
+
+
+def same_training_entry(existing: dict, candidate: dict) -> bool:
+    existing_raw = normalize_training_name(existing.get("raw"))
+    candidate_raw = normalize_training_name(candidate.get("raw"))
+    if existing_raw and candidate_raw and existing_raw == candidate_raw:
+        return True
+
+    existing_exercises = existing.get("exercises") or []
+    candidate_exercises = candidate.get("exercises") or []
+    if existing_exercises and candidate_exercises:
+        existing_name = normalize_training_name(existing_exercises[0].get("name"))
+        candidate_name = normalize_training_name(candidate_exercises[0].get("name"))
+        return bool(existing_name and candidate_name and existing_name == candidate_name)
+
+    existing_name = normalize_training_name(existing.get("name"))
+    candidate_name = normalize_training_name(candidate.get("name"))
+    return bool(existing_name and candidate_name and existing_name == candidate_name)
+
+
+def update_recent_training_if_duplicate(
+    daily_log: dict, training_entry: dict, username: str | None, now: datetime
+) -> bool:
+    training_entries = daily_log.get("training") or []
+    if not training_entries:
+        return False
+
+    last_training = training_entries[-1]
+    elapsed_min = minutes_since_training(
+        last_training, now, daily_log.get("date") or today_str()
+    )
+    if elapsed_min is None or elapsed_min > 30:
+        return False
+    if not same_training_entry(last_training, training_entry):
+        return False
+
+    previous_time = last_training.get("time")
+    last_training.clear()
+    last_training.update(training_entry)
+    last_training["time"] = previous_time or now.strftime("%H:%M")
+    last_training["updated_at"] = now.strftime("%H:%M")
+    last_training["updated_by"] = username
+    return True
 
 
 def find_previous_exercise_logs(exercise_name: str, days: int = 30) -> dict | None:
@@ -1030,6 +1086,82 @@ def append_training_progression_feedback(answer: str, daily_log: dict) -> str:
     return f"{answer.rstrip()}\n\n{feedback}"
 
 
+def format_kg(value: float | int | None) -> str:
+    if value is None:
+        return "без веса"
+    numeric = float(value)
+    return f"{numeric:g} кг"
+
+
+def format_training_sets(sets: list[dict]) -> str:
+    if not sets:
+        return "подходы не распознаны"
+
+    weights = [item.get("weight_kg") for item in sets if item.get("weight_kg") is not None]
+    reps = [item.get("reps") for item in sets if item.get("reps") is not None]
+    weight_text = format_kg(weights[0]) if weights and len(set(weights)) == 1 else None
+    reps_text = "/".join(str(rep) for rep in reps) if reps else "повторы не распознаны"
+
+    if weight_text:
+        return f"{len(sets)} {plural_ru(len(sets), 'подход', 'подхода', 'подходов')} — {weight_text} × {reps_text}"
+    return f"{len(sets)} {plural_ru(len(sets), 'подход', 'подхода', 'подходов')} — {reps_text}"
+
+
+def training_log_summary(training_entry: dict) -> str:
+    exercises = training_entry.get("exercises") or []
+    if exercises:
+        exercise = exercises[0]
+        name = str(exercise.get("name") or training_entry.get("name") or "упражнение").strip()
+        return f"{name}: {format_training_sets(exercise.get('sets') or [])}"
+
+    name = str(training_entry.get("name") or "тренировка").strip()
+    duration = training_entry.get("duration_min")
+    if duration is not None:
+        return f"{name}: {int(duration)} мин"
+    return name
+
+
+def training_progression_parts(daily_log: dict) -> dict[str, str]:
+    training_entries = daily_log.get("training") or []
+    if not training_entries:
+        return {
+            "progress": "Запись сохранена.",
+            "next": "В следующий раз добавь упражнение, вес и повторы.",
+        }
+
+    training_entry = training_entries[-1]
+    exercises = training_entry.get("exercises") or []
+    if exercises:
+        current_exercise = exercises[0]
+        previous_exercise = find_previous_exercise_logs(str(current_exercise.get("name") or ""))
+        return build_progression_feedback(current_exercise, previous_exercise, daily_log)
+
+    if training_entry.get("type") == "cardio":
+        return {
+            "progress": "Кардио записано — это пойдёт в недельный объём.",
+            "next": "В следующий раз снова отметь длительность и зону.",
+        }
+
+    return {
+        "progress": "Тренировка записана, но без подходов и весов.",
+        "next": "В следующий раз добавь упражнения, вес и повторы.",
+    }
+
+
+def format_training_log_response(entry_type: str, daily_log: dict) -> str:
+    training_entries = daily_log.get("training") or []
+    training_entry = training_entries[-1] if training_entries else {}
+    header = "Обновил тренировку" if entry_type == "training_update" else "Записал"
+    feedback = training_progression_parts(daily_log)
+    return "\n\n".join(
+        [
+            f"{header}:\n{training_log_summary(training_entry)}",
+            f"Прогресс:\n{feedback['progress']}",
+            f"Следующий раз:\n{feedback['next']}",
+        ]
+    )
+
+
 def classify_entry(text: str) -> str:
     normalized = text.lower()
     if is_training_query_message(text):
@@ -1080,6 +1212,9 @@ def append_log_entry(text: str, username: str | None) -> tuple[str, dict]:
         training_entry = parse_training_log(text)
         training_entry["time"] = now
         training_entry["logged_by"] = username
+        if update_recent_training_if_duplicate(daily_log, training_entry, username, now_dt):
+            write_daily_log(daily_log)
+            return "training_update", daily_log
         daily_log["training"].append(training_entry)
     elif entry_type == "meal":
         daily_log["meals"].append(
@@ -1564,16 +1699,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         write_daily_log(daily_log)
         entry_type = "meal"
 
+    if entry_type in ("training", "training_update"):
+        await update.message.reply_text(format_training_log_response(entry_type, daily_log))
+        return
+
     if not os.getenv("ANTHROPIC_API_KEY"):
         if food_like_message or entry_type in ("meal", "meal_update"):
             await update.message.reply_text(
                 format_meal_response("", entry_type, daily_log, text)
-            )
-            return
-        if entry_type == "training":
-            await update.message.reply_text(
-                append_training_progression_feedback("", daily_log)
-                or model_error_message(entry_type)
             )
             return
         await update.message.reply_text(model_error_message(entry_type))
@@ -1586,18 +1719,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             answer = format_meal_response("", entry_type, daily_log, text)
             await update.message.reply_text(answer)
             return
-        if entry_type == "training":
-            answer = (
-                append_training_progression_feedback("", daily_log)
-                or model_error_message(entry_type)
-            )
-        else:
-            answer = model_error_message(entry_type)
+        answer = model_error_message(entry_type)
 
     if food_like_message or entry_type in ("meal", "meal_update"):
         answer = format_meal_response(answer, entry_type, daily_log, text)
-    elif entry_type == "training":
-        answer = append_training_progression_feedback(answer, daily_log)
 
     await update.message.reply_text(answer)
 
