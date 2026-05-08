@@ -185,6 +185,11 @@ def display_exercise_name(name: str) -> str:
     return EXERCISE_DISPLAY_NAMES.get(normalized, str(name or "упражнение").strip())
 
 
+def primary_display_exercise_name(name: str) -> str:
+    display_name = display_exercise_name(name)
+    return re.split(r"\s+или\s+|,\s*", display_name, maxsplit=1)[0].strip() or display_name
+
+
 def display_training_range(value) -> str:
     if value is None:
         return ""
@@ -1242,6 +1247,26 @@ def parse_training_log(text: str) -> dict:
     }
 
 
+def parse_single_set_log(text: str) -> dict | None:
+    patterns = [
+        r"(?P<reps>\d{1,2})\s*(?:повтор\w*|раз\w*)\s+(?P<weight>\d{1,3}(?:[.,]\d+)?)\s*кг\b",
+        r"(?:сделал\w*\s+|выполнил\w*\s+)?(?P<weight>\d{1,3}(?:[.,]\d+)?)\s*кг\s*(?:на|[xх×])\s*(?P<reps>\d{1,2})\b",
+        r"(?:сделал\w*\s+|выполнил\w*\s+)?(?P<weight>\d{1,3}(?:[.,]\d+)?)\s+на\s+(?P<reps>\d{1,2})\b",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if not match:
+            continue
+        weight = float(match.group("weight").replace(",", "."))
+        reps = int(match.group("reps"))
+        return {
+            "weight_kg": weight,
+            "reps": reps,
+            "raw": text,
+        }
+    return None
+
+
 def minutes_since_training(training_entry: dict, now: datetime, log_date: str) -> float | None:
     training_time = training_entry.get("time")
     if not training_time:
@@ -1584,6 +1609,120 @@ def current_session_exercise(session: dict, active_training: dict | None) -> dic
     return exercises[index]
 
 
+def find_active_training_entry(daily_log: dict, session_name: str) -> dict | None:
+    normalized_session = normalize_training_name(session_name)
+    for entry in reversed(daily_log.get("training") or []):
+        if not entry.get("active_session"):
+            continue
+        if normalize_training_name(entry.get("session_name")) == normalized_session:
+            return entry
+    return None
+
+
+def append_active_training_set(
+    daily_log: dict, set_data: dict, username: str | None, now: datetime
+) -> dict | None:
+    active = daily_log.get("active_training") or {}
+    session = find_program_session(active.get("session_name"))
+    exercise = current_session_exercise(session, active)
+    if not session or not exercise:
+        return None
+
+    session_name = str(session.get("name") or "тренировка").strip()
+    exercise_name = str(exercise.get("name") or "упражнение").strip()
+    training_entry = find_active_training_entry(daily_log, session_name)
+    if not training_entry:
+        training_entry = {
+            "type": "strength",
+            "name": session_name,
+            "session_name": session_name,
+            "active_session": True,
+            "duration_min": None,
+            "rpe": None,
+            "exercises": [],
+            "raw": None,
+            "time": now.strftime("%H:%M"),
+            "logged_by": username,
+        }
+        daily_log["training"].append(training_entry)
+
+    exercise_log = None
+    for candidate in training_entry.get("exercises") or []:
+        if normalize_training_name(candidate.get("name")) == normalize_training_name(exercise_name):
+            exercise_log = candidate
+            break
+
+    if not exercise_log:
+        exercise_log = {
+            "name": exercise_name,
+            "sets": [],
+            "raw": None,
+        }
+        training_entry.setdefault("exercises", []).append(exercise_log)
+
+    exercise_log.setdefault("sets", []).append(
+        {
+            "weight_kg": set_data.get("weight_kg"),
+            "reps": set_data.get("reps"),
+            "raw": set_data.get("raw"),
+        }
+    )
+    exercise_log["raw"] = set_data.get("raw")
+    training_entry["updated_at"] = now.strftime("%H:%M")
+    training_entry["updated_by"] = username
+
+    return {
+        "session": session,
+        "exercise": exercise,
+        "exercise_log": exercise_log,
+        "set": exercise_log["sets"][-1],
+        "set_number": len(exercise_log["sets"]),
+    }
+
+
+def format_next_reps_goal(target_reps, current_reps: int | None) -> str:
+    target = display_training_range(target_reps)
+    numbers = [int(item) for item in re.findall(r"\d{1,2}", str(target_reps or ""))]
+    if len(numbers) >= 2 and current_reps is not None:
+        lower = max(numbers[0], min(current_reps, numbers[1]))
+        return f"{lower}–{numbers[1]}"
+    return target or "рабочий диапазон"
+
+
+def format_training_set_response(daily_log: dict) -> str:
+    result = daily_log.get("_last_training_set") or {}
+    exercise = result.get("exercise") or {}
+    set_data = result.get("set") or {}
+    set_number = int(result.get("set_number") or 1)
+    exercise_name = primary_display_exercise_name(str(exercise.get("name") or "упражнение"))
+    weight = set_data.get("weight_kg")
+    reps = set_data.get("reps")
+    sets_target = exercise.get("sets")
+    reps_goal = format_next_reps_goal(exercise.get("reps"), int(reps) if reps is not None else None)
+
+    if sets_target is not None:
+        try:
+            if set_number >= int(sets_target):
+                next_step = "Упражнение закрыто. Напиши 'следующее упражнение', когда будешь готов."
+            else:
+                next_step = (
+                    f"Подход {set_number + 1}. Держи {format_kg(weight)}, цель {reps_goal} повторов."
+                )
+        except (TypeError, ValueError):
+            next_step = (
+                f"Следующий подход. Держи {format_kg(weight)}, цель {reps_goal} повторов."
+            )
+    else:
+        next_step = f"Следующий подход. Держи {format_kg(weight)}, цель {reps_goal} повторов."
+
+    return "\n\n".join(
+        [
+            f"Записал:\n{exercise_name} — подход {set_number}: {format_kg(weight)} × {reps}",
+            f"Дальше:\n{next_step}",
+        ]
+    )
+
+
 def format_exercise_plan_line(exercise: dict) -> str:
     name = display_exercise_name(str(exercise.get("name") or "упражнение"))
     sets = exercise.get("sets")
@@ -1667,6 +1806,24 @@ def append_log_entry(text: str, username: str | None) -> tuple[str, dict]:
     entry_type = classify_entry(text)
     now_dt = datetime.now(TIMEZONE)
     now = now_dt.strftime("%H:%M")
+
+    full_strength_log = re.search(
+        r"(\d{1,2}\s*подход|\d{1,2}\s*[xх×]\s*\d{1,2}\s+\d{1,3}(?:[.,]\d+)?\s*кг)",
+        text,
+        re.IGNORECASE,
+    )
+    single_set_data = parse_single_set_log(text)
+    if (
+        daily_log.get("active_training")
+        and single_set_data
+        and not full_strength_log
+        and not is_food_message(text)
+    ):
+        set_result = append_active_training_set(daily_log, single_set_data, username, now_dt)
+        if set_result:
+            write_daily_log(daily_log)
+            daily_log["_last_training_set"] = set_result
+            return "training_set", daily_log
 
     should_update_recent_meal = entry_type == "note" or (
         entry_type == "meal"
@@ -2301,6 +2458,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
         write_daily_log(daily_log)
         entry_type = "meal"
+
+    if entry_type == "training_set":
+        await update.message.reply_text(format_training_set_response(daily_log))
+        return
 
     if entry_type in ("training", "training_update"):
         await update.message.reply_text(format_training_log_response(entry_type, daily_log))
