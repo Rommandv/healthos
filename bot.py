@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
 import os
 import re
 import sys
@@ -765,6 +767,18 @@ def exact_user_kbju_present(text: str) -> bool:
     return complete_nutrition(extract_nutrition_estimate(text))
 
 
+MEAL_RANGE_FIELDS = (
+    "calories_min",
+    "calories_max",
+    "protein_min",
+    "protein_max",
+    "fat_min",
+    "fat_max",
+    "carbs_min",
+    "carbs_max",
+)
+
+
 def approximate_multi_item_estimate(partial_macros: bool = False) -> dict[str, int | None]:
     return {
         "calories": None,
@@ -826,6 +840,54 @@ def complete_nutrition(values: dict) -> bool:
         values.get(field) is not None
         for field in ("calories", "protein_g", "fat_g", "carbs_g")
     )
+
+
+def parse_int_or_none(value) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(round(float(value)))
+    except (TypeError, ValueError):
+        return None
+
+
+def extract_json_object(text: str) -> dict:
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\s*```$", "", cleaned)
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        start = cleaned.find("{")
+        end = cleaned.rfind("}")
+        if start == -1 or end == -1 or end <= start:
+            raise
+        return json.loads(cleaned[start : end + 1])
+
+
+def parse_food_vision_result(raw_text: str, caption: str | None = None) -> dict:
+    try:
+        data = extract_json_object(raw_text)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        data = {}
+
+    description = str(data.get("description") or caption or "еда с фото").strip()
+    confidence = str(data.get("confidence") or "low").strip().lower()
+    if confidence not in {"low", "medium", "high"}:
+        confidence = "low"
+
+    result = {
+        "description": description or "еда с фото",
+        "confidence": confidence,
+        "notes": str(
+            data.get("notes")
+            or ("Оценка по фото, без точного веса порции." if data else "Не удалось надёжно распознать фото")
+        ).strip(),
+    }
+    for field in MEAL_RANGE_FIELDS:
+        result[field] = parse_int_or_none(data.get(field))
+    return result
 
 
 def minutes_since_meal(meal: dict, now: datetime, log_date: str) -> float | None:
@@ -1735,6 +1797,9 @@ def format_meal_response(
 
     if meals:
         latest = meals[-1]
+        for field in MEAL_RANGE_FIELDS:
+            if latest.get(field) is not None:
+                estimate[field] = int(latest[field])
         if not should_ignore_meal_level_nutrition(latest):
             for field in ("calories", "protein_g", "fat_g", "carbs_g"):
                 if estimate.get(field) is None and latest.get(field) is not None:
@@ -1803,6 +1868,65 @@ def call_anthropic(user_text: str, entry_type: str, daily_log: dict) -> str:
         ],
     )
     return "".join(block.text for block in message.content if block.type == "text").strip()
+
+
+def call_anthropic_food_vision(
+    image_bytes: bytes, mime_type: str = "image/jpeg", caption: str | None = None
+) -> dict:
+    client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+    caption_text = caption.strip() if caption else "нет подписи"
+    prompt = f"""
+Распознай еду на фото для Health OS food logging.
+
+Правила:
+- Верни только JSON object, без markdown.
+- Не притворяйся точным.
+- Калории и макросы давай только диапазонами.
+- Если фото неясное, дай широкий диапазон и confidence low.
+- Не проси граммы по умолчанию.
+- Максимум один уточняющий вопрос только если невозможно полезно записать; если вопрос нужен, положи его в notes.
+
+Caption от пользователя: {caption_text}
+
+JSON schema:
+{{
+  "description": "краткое описание еды на русском",
+  "calories_min": 400,
+  "calories_max": 700,
+  "protein_min": 20,
+  "protein_max": 40,
+  "fat_min": 10,
+  "fat_max": 30,
+  "carbs_min": 40,
+  "carbs_max": 90,
+  "confidence": "low|medium|high",
+  "notes": "короткая пометка"
+}}
+""".strip()
+
+    message = client.messages.create(
+        model=ANTHROPIC_MODEL,
+        max_tokens=500,
+        temperature=0.1,
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": mime_type,
+                            "data": base64.b64encode(image_bytes).decode("ascii"),
+                        },
+                    },
+                    {"type": "text", "text": prompt},
+                ],
+            }
+        ],
+    )
+    raw_text = "".join(block.text for block in message.content if block.type == "text").strip()
+    return parse_food_vision_result(raw_text, caption)
 
 
 def call_anthropic_health_review(review_context: str, user_text: str) -> str:
@@ -1878,6 +2002,56 @@ async def health_review(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
 
     await reply_text_safely(update, build_health_review_brief())
+
+
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message or not update.message.photo:
+        return
+
+    if not os.getenv("ANTHROPIC_API_KEY"):
+        await update.message.reply_text(
+            "Фото получил, но сейчас не смог оценить еду. Попробуй ещё раз или напиши еду текстом."
+        )
+        return
+
+    caption = update.message.caption.strip() if update.message.caption else None
+    username = update.effective_user.username if update.effective_user else None
+
+    try:
+        photo = update.message.photo[-1]
+        telegram_file = await photo.get_file()
+        image_bytes = bytes(await telegram_file.download_as_bytearray())
+        vision_result = await asyncio.to_thread(
+            call_anthropic_food_vision, image_bytes, "image/jpeg", caption
+        )
+    except Exception:
+        await update.message.reply_text(
+            "Фото получил, но сейчас не смог оценить еду. Попробуй ещё раз или напиши еду текстом."
+        )
+        return
+
+    daily_log = read_daily_log()
+    now = datetime.now(TIMEZONE).strftime("%H:%M")
+    meal_entry = {
+        "time": now,
+        "description": vision_result.get("description") or caption or "еда с фото",
+        "calories": None,
+        "protein_g": None,
+        "fat_g": None,
+        "carbs_g": None,
+        "source": "photo",
+        "confidence": vision_result.get("confidence") or "low",
+        "notes": vision_result.get("notes"),
+        "logged_by": username,
+    }
+    for field in MEAL_RANGE_FIELDS:
+        meal_entry[field] = vision_result.get(field)
+    daily_log["meals"].append(meal_entry)
+    write_daily_log(daily_log)
+
+    await update.message.reply_text(
+        format_meal_response("", "meal", daily_log, str(meal_entry["description"]))
+    )
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1968,6 +2142,7 @@ def main() -> None:
     app.add_handler(CommandHandler("today", today))
     app.add_handler(CommandHandler("health_review", health_review))
     app.add_handler(MessageHandler(filters.Regex(r"^/health-review(?:@\w+)?(?:\s|$)"), health_review))
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     try:
