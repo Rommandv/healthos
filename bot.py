@@ -25,6 +25,7 @@ KNOWLEDGE_DIR = BASE_DIR / "knowledge"
 LOGS_DIR = DATA_DIR / "tactical" / "logs"
 TIMEZONE = ZoneInfo(os.getenv("HEALTH_OS_TIMEZONE", "Asia/Omsk"))
 ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-3-5-haiku-latest")
+PHOTO_FOOD_ENABLED = os.getenv("PHOTO_FOOD_ENABLED", "false").strip().lower() == "true"
 CONTEXT_FILE_SUFFIXES = {".yaml", ".yml", ".md", ".txt"}
 MAX_KNOWLEDGE_FILES = 3
 TELEGRAM_SAFE_MESSAGE_LIMIT = 3500
@@ -2006,6 +2007,12 @@ async def health_review(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message or not update.message.photo:
+        return
+
+    if not PHOTO_FOOD_ENABLED:
+        await update.message.reply_text(
+            "Фото-лог еды пока выключен. Напиши еду текстом — я запишу."
+        )
         return
 
     if not os.getenv("ANTHROPIC_API_KEY"):
