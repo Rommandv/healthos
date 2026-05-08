@@ -860,6 +860,176 @@ def parse_training_log(text: str) -> dict:
     }
 
 
+def normalize_training_name(value: str | None) -> str:
+    return re.sub(r"\s+", " ", str(value or "").strip().lower())
+
+
+def find_previous_exercise_logs(exercise_name: str, days: int = 30) -> dict | None:
+    target_name = normalize_training_name(exercise_name)
+    if not target_name:
+        return None
+
+    today = today_str()
+    for date in reversed(recent_log_dates(days)):
+        if date == today:
+            continue
+        log_data = read_daily_log(date)
+        for training_entry in reversed(log_data.get("training") or []):
+            for exercise in reversed(training_entry.get("exercises") or []):
+                candidate_name = normalize_training_name(exercise.get("name"))
+                if not candidate_name:
+                    continue
+                if target_name in candidate_name or candidate_name in target_name:
+                    previous = dict(exercise)
+                    previous["date"] = date
+                    previous["training_name"] = training_entry.get("name")
+                    return previous
+    return None
+
+
+def exercise_total_reps(exercise: dict | None) -> int:
+    return sum(
+        int(item.get("reps") or 0)
+        for item in ((exercise or {}).get("sets") or [])
+    )
+
+
+def exercise_weight(exercise: dict | None) -> float | None:
+    weights = [
+        float(item["weight_kg"])
+        for item in ((exercise or {}).get("sets") or [])
+        if item.get("weight_kg") is not None
+    ]
+    return max(weights) if weights else None
+
+
+def exercise_sets_count(exercise: dict | None) -> int:
+    return len((exercise or {}).get("sets") or [])
+
+
+def exercise_reps(exercise: dict | None) -> list[int]:
+    return [
+        int(item["reps"])
+        for item in ((exercise or {}).get("sets") or [])
+        if item.get("reps") is not None
+    ]
+
+
+def upper_rep_target_for_exercise(exercise_name: str) -> int:
+    normalized = normalize_training_name(exercise_name)
+    if re.search(r"(жим|присед|тяга|bench|squat|deadlift|press)", normalized):
+        return 10
+    return 12
+
+
+def recovery_limited_today(daily_log: dict | None) -> bool:
+    sleep = ((daily_log or {}).get("sleep") or {})
+    hours = sleep.get("hours")
+    try:
+        if hours is not None and float(hours) < 6:
+            return True
+    except (TypeError, ValueError):
+        pass
+
+    quality = str(sleep.get("quality") or sleep.get("raw") or "").lower()
+    return bool(re.search(r"(плох|разбит|туман|устал|bad|poor)", quality))
+
+
+def build_progression_feedback(
+    current_exercise: dict, previous_exercise: dict | None, daily_log: dict | None = None
+) -> dict[str, str]:
+    if recovery_limited_today(daily_log):
+        return {
+            "progress": "На фоне плохого восстановления сегодня не повышаем нагрузку.",
+            "next": "Держи технику и оставь вес без повышения.",
+        }
+
+    if not previous_exercise:
+        return {
+            "progress": "Первый структурный лог по этому упражнению — теперь есть база для прогрессии.",
+            "next": "В следующий раз повтори вес и попробуй добрать повторы.",
+        }
+
+    current_total = exercise_total_reps(current_exercise)
+    previous_total = exercise_total_reps(previous_exercise)
+    current_weight = exercise_weight(current_exercise)
+    previous_weight = exercise_weight(previous_exercise)
+    reps = exercise_reps(current_exercise)
+    upper_target = upper_rep_target_for_exercise(str(current_exercise.get("name") or ""))
+    all_upper = bool(reps) and all(rep >= upper_target for rep in reps)
+
+    if current_total < previous_total:
+        return {
+            "progress": f"Повторы просели: {current_total} против {previous_total}.",
+            "next": "Вес оставить, добрать повторы, без повышения.",
+        }
+
+    if all_upper:
+        return {
+            "progress": f"Верх диапазона закрыт: все подходы по {upper_target}+ повторов.",
+            "next": "Можно думать о +2.5 кг в следующий раз.",
+        }
+
+    if current_weight == previous_weight and current_total > previous_total:
+        delta = current_total - previous_total
+        return {
+            "progress": f"Прогресс: +{delta} {plural_ru(delta, 'повтор', 'повтора', 'повторов')}.",
+            "next": "В следующий раз оставь вес и добери верх диапазона.",
+        }
+
+    if current_weight and previous_weight and current_weight > previous_weight:
+        return {
+            "progress": f"Вес выше: {current_weight:g} кг против {previous_weight:g} кг.",
+            "next": "Закрепи вес и добери повторы в этом диапазоне.",
+        }
+
+    current_sets = exercise_sets_count(current_exercise)
+    previous_sets = exercise_sets_count(previous_exercise)
+    if current_sets < previous_sets:
+        return {
+            "progress": (
+                f"Объём ниже: {current_sets} "
+                f"{plural_ru(current_sets, 'подход', 'подхода', 'подходов')} "
+                f"против {previous_sets}."
+            ),
+            "next": "Вес оставить и вернуть полный объём.",
+        }
+
+    return {
+        "progress": "На уровне прошлого раза.",
+        "next": "Оставь вес и попробуй добавить 1–2 повтора.",
+    }
+
+
+def training_progression_feedback(daily_log: dict) -> str:
+    training_entries = daily_log.get("training") or []
+    if not training_entries:
+        return ""
+
+    exercises = training_entries[-1].get("exercises") or []
+    if not exercises:
+        return ""
+
+    current_exercise = exercises[0]
+    previous_exercise = find_previous_exercise_logs(str(current_exercise.get("name") or ""))
+    feedback = build_progression_feedback(current_exercise, previous_exercise, daily_log)
+    return "\n\n".join(
+        [
+            f"Прогресс:\n{feedback['progress']}",
+            f"Следующий раз:\n{feedback['next']}",
+        ]
+    )
+
+
+def append_training_progression_feedback(answer: str, daily_log: dict) -> str:
+    feedback = training_progression_feedback(daily_log)
+    if not feedback or "Прогресс:" in answer:
+        return answer
+    if not answer.strip():
+        return feedback
+    return f"{answer.rstrip()}\n\n{feedback}"
+
+
 def classify_entry(text: str) -> str:
     normalized = text.lower()
     if is_training_query_message(text):
@@ -1400,6 +1570,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 format_meal_response("", entry_type, daily_log, text)
             )
             return
+        if entry_type == "training":
+            await update.message.reply_text(
+                append_training_progression_feedback("", daily_log)
+                or model_error_message(entry_type)
+            )
+            return
         await update.message.reply_text(model_error_message(entry_type))
         return
 
@@ -1410,10 +1586,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             answer = format_meal_response("", entry_type, daily_log, text)
             await update.message.reply_text(answer)
             return
-        answer = model_error_message(entry_type)
+        if entry_type == "training":
+            answer = (
+                append_training_progression_feedback("", daily_log)
+                or model_error_message(entry_type)
+            )
+        else:
+            answer = model_error_message(entry_type)
 
     if food_like_message or entry_type in ("meal", "meal_update"):
         answer = format_meal_response(answer, entry_type, daily_log, text)
+    elif entry_type == "training":
+        answer = append_training_progression_feedback(answer, daily_log)
 
     await update.message.reply_text(answer)
 
