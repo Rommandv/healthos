@@ -139,10 +139,56 @@ EXERCISE_ALIASES = {
 }
 
 
+EXERCISE_DISPLAY_NAMES = {
+    "assisted pull up": "подтягивания с ассистом",
+    "back squat": "присед со штангой",
+    "back squat or leg press": "присед со штангой или жим ногами",
+    "bench press": "жим лёжа",
+    "bench press or machine chest press": "жим лёжа или жим в тренажёре",
+    "biceps curl": "сгибание на бицепс",
+    "bulgarian split squat": "болгарский сплит-присед",
+    "cable triceps pressdown": "разгибание на трицепс в блоке",
+    "calf raise": "подъём на икры",
+    "carry or core": "переноска или корпус",
+    "chest supported row": "тяга с упором грудью",
+    "core anti extension": "антиэкстензия корпуса",
+    "deadlift variation or hip thrust": "вариант становой тяги или хип-траст",
+    "dumbbell bench press": "жим гантелей лёжа",
+    "front squat": "фронтальный присед",
+    "front squat hack squat or leg press": "фронтальный присед, гакк-присед или жим ногами",
+    "hack squat": "гакк-присед",
+    "incline dumbbell press": "жим гантелей на наклонной",
+    "lat pulldown": "тяга верхнего блока",
+    "lat pulldown or assisted pull up": "тяга верхнего блока или подтягивания с ассистом",
+    "lateral raise": "махи в стороны",
+    "leg curl": "сгибание ног",
+    "leg extension": "разгибание ног",
+    "leg press": "жим ногами",
+    "machine chest press": "жим в тренажёре",
+    "overhead press or machine shoulder press": "жим над головой или жим плеч в тренажёре",
+    "plank": "планка",
+    "pull up assisted pull up or pulldown": "подтягивания, подтягивания с ассистом или тяга верхнего блока",
+    "rear delt fly": "разведения на заднюю дельту",
+    "romanian deadlift": "румынская тяга",
+    "seated cable row": "горизонтальная тяга в блоке",
+}
+
+
 def normalize_exercise_name(value: str | None) -> str:
     normalized = str(value or "").strip().lower().replace("ё", "е")
     normalized = re.sub(r"[^a-zа-я0-9]+", " ", normalized)
     return re.sub(r"\s+", " ", normalized).strip()
+
+
+def display_exercise_name(name: str) -> str:
+    normalized = normalize_exercise_name(name)
+    return EXERCISE_DISPLAY_NAMES.get(normalized, str(name or "упражнение").strip())
+
+
+def display_training_range(value) -> str:
+    if value is None:
+        return ""
+    return re.sub(r"(?<=\d)-(?=\d)", "–", str(value))
 
 
 def load_program_exercises() -> list[dict]:
@@ -330,7 +376,13 @@ def build_replacement_guard(user_text: str) -> str:
         "allowed_candidates:",
     ]
     lines.extend(
-        f"- {exercise['name']} | sets: {exercise.get('sets')} | reps: {exercise.get('reps')} | rpe: {exercise.get('rpe')}"
+        (
+            f"- {display_exercise_name(exercise['name'])} "
+            f"| source: {exercise['name']} "
+            f"| sets: {exercise.get('sets')} "
+            f"| reps: {display_training_range(exercise.get('reps'))} "
+            f"| rpe: {display_training_range(exercise.get('rpe'))}"
+        )
         for exercise in allowed
     )
     if not allowed:
@@ -1441,7 +1493,9 @@ def training_log_summary(training_entry: dict) -> str:
     exercises = training_entry.get("exercises") or []
     if exercises:
         exercise = exercises[0]
-        name = str(exercise.get("name") or training_entry.get("name") or "упражнение").strip()
+        name = display_exercise_name(
+            str(exercise.get("name") or training_entry.get("name") or "упражнение")
+        )
         return f"{name}: {format_training_sets(exercise.get('sets') or [])}"
 
     name = str(training_entry.get("name") or "тренировка").strip()
@@ -1531,17 +1585,17 @@ def current_session_exercise(session: dict, active_training: dict | None) -> dic
 
 
 def format_exercise_plan_line(exercise: dict) -> str:
-    name = str(exercise.get("name") or "упражнение").strip()
+    name = display_exercise_name(str(exercise.get("name") or "упражнение"))
     sets = exercise.get("sets")
-    reps = exercise.get("reps")
-    rpe = exercise.get("rpe")
+    reps = display_training_range(exercise.get("reps"))
+    rpe = display_training_range(exercise.get("rpe"))
     volume = f"{sets}×{reps}" if sets and reps else str(reps or "рабочий диапазон")
     rpe_text = f", RPE {rpe}" if rpe else ""
     return f"{name} — {volume}{rpe_text}"
 
 
 def training_log_prompt_for_exercise(exercise: dict) -> str:
-    name = str(exercise.get("name") or "упражнение").strip()
+    name = display_exercise_name(str(exercise.get("name") or "упражнение"))
     return f"\"{name} {{вес}} кг на {{повторы}}\""
 
 
