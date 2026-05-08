@@ -1106,7 +1106,8 @@ def is_training_session_query(text: str) -> bool:
             r"(начн[её]м\s+тренировк|начать\s+тренировк|"
             r"что\s+мне\s+сегодня\s+делать\s+в\s+зале\s+пошагово|"
             r"какой\s+первый\s+подход|первый\s+подход|"
-            r"следующий\s+подход|что\s+дальше|продолжим\s+тренировк)",
+            r"следующий\s+подход|что\s+дальше|продолжим\s+тренировк|"
+            r"^\s*(следующее\s+упражнение|следующее|дальше)\s*$)",
             normalized,
         )
     )
@@ -1573,6 +1574,8 @@ def format_training_log_response(entry_type: str, daily_log: dict) -> str:
 
 def training_session_query_kind(text: str) -> str:
     normalized = text.lower().replace("ё", "е")
+    if re.fullmatch(r"\s*(следующее\s+упражнение|следующее|дальше)\s*", normalized):
+        return "advance"
     if re.search(r"(следующий\s+подход|что\s+дальше|продолжим\s+тренировк)", normalized):
         return "next"
     return "start"
@@ -1582,6 +1585,10 @@ def ensure_active_training(daily_log: dict, now: datetime) -> dict:
     active = daily_log.get("active_training") or {}
     session = find_program_session(active.get("session_name"))
     if session:
+        active.setdefault("exercise_index", 0)
+        active.setdefault("current_set_index", 0)
+        active.setdefault("started_at", now.strftime("%H:%M"))
+        daily_log["active_training"] = active
         return session
 
     session = select_in_session_training_session()
@@ -1592,6 +1599,7 @@ def ensure_active_training(daily_log: dict, now: datetime) -> dict:
     daily_log["active_training"] = {
         "session_name": session.get("name"),
         "exercise_index": 0,
+        "current_set_index": 0,
         "started_at": now.strftime("%H:%M"),
     }
     return session
@@ -1670,6 +1678,8 @@ def append_active_training_set(
     exercise_log["raw"] = set_data.get("raw")
     training_entry["updated_at"] = now.strftime("%H:%M")
     training_entry["updated_by"] = username
+    active["current_set_index"] = len(exercise_log["sets"])
+    daily_log["active_training"] = active
 
     return {
         "session": session,
@@ -1689,6 +1699,44 @@ def format_next_reps_goal(target_reps, current_reps: int | None) -> str:
     return target or "рабочий диапазон"
 
 
+def format_next_exercise_response(session: dict, exercise: dict) -> str:
+    exercise_line = format_exercise_plan_line(exercise)
+    return "\n\n".join(
+        [
+            f"Следующее:\n{exercise_line}",
+            "Старт:\n1–2 разминочных подхода, потом рабочий вес.",
+            f"После подхода напиши:\n{training_log_prompt_for_exercise(exercise)}",
+        ]
+    )
+
+
+def advance_active_training_exercise(daily_log: dict) -> str:
+    active = daily_log.get("active_training") or {}
+    session = find_program_session(active.get("session_name"))
+    if not session:
+        session = ensure_active_training(daily_log, datetime.now(TIMEZONE))
+        exercise = current_session_exercise(session, daily_log.get("active_training"))
+        if exercise:
+            return format_next_exercise_response(session, exercise)
+        return "Тренировка закрыта.\nХорошая работа. Если хочешь — напиши \"итоги тренировки\"."
+
+    exercises = session.get("exercises") or []
+    try:
+        current_index = int(active.get("exercise_index") or 0)
+    except (TypeError, ValueError):
+        current_index = 0
+
+    next_index = current_index + 1
+    if next_index >= len(exercises):
+        daily_log["active_training"] = None
+        return "Тренировка закрыта.\nХорошая работа. Если хочешь — напиши \"итоги тренировки\"."
+
+    active["exercise_index"] = next_index
+    active["current_set_index"] = 0
+    daily_log["active_training"] = active
+    return format_next_exercise_response(session, exercises[next_index])
+
+
 def format_training_set_response(daily_log: dict) -> str:
     result = daily_log.get("_last_training_set") or {}
     exercise = result.get("exercise") or {}
@@ -1703,7 +1751,7 @@ def format_training_set_response(daily_log: dict) -> str:
     if sets_target is not None:
         try:
             if set_number >= int(sets_target):
-                next_step = "Упражнение закрыто. Напиши 'следующее упражнение', когда будешь готов."
+                next_step = "Упражнение закрыто. Напиши \"следующее упражнение\"."
             else:
                 next_step = (
                     f"Подход {set_number + 1}. Держи {format_kg(weight)}, цель {reps_goal} повторов."
@@ -1741,6 +1789,9 @@ def training_log_prompt_for_exercise(exercise: dict) -> str:
 def format_training_session_response(daily_log: dict, user_text: str) -> str:
     kind = training_session_query_kind(user_text)
     now = datetime.now(TIMEZONE)
+    if kind == "advance":
+        return advance_active_training_exercise(daily_log)
+
     session = ensure_active_training(daily_log, now)
     active = daily_log.get("active_training") or {}
     session_name = str(session.get("name") or "тренировка").strip()
