@@ -134,6 +134,8 @@ EXERCISE_ALIASES = {
     "присед": "squat",
     "румынская тяга": "romanian deadlift",
     "тяга верхнего блока": "lat pulldown",
+    "тяги верхнего блока": "lat pulldown",
+    "тягу верхнего блока": "lat pulldown",
     "жим лежа": "bench press",
     "жим лёжа": "bench press",
 }
@@ -1157,8 +1159,47 @@ def explicit_duration_min(text: str) -> int | None:
 
 
 def clean_exercise_name(value: str) -> str:
-    cleaned = re.sub(r"^(сделал\w*|выполнил\w*|закончил\w*)\s+", "", value.strip(), flags=re.IGNORECASE)
+    cleaned = re.sub(
+        r"^(сделал\w*|выполнил\w*|закончил\w*|начну\s+с|начинаю\s+с)\s+",
+        "",
+        value.strip(),
+        flags=re.IGNORECASE,
+    )
     return re.sub(r"\s+", " ", cleaned).strip()
+
+
+def parse_explicit_training_set(text: str) -> dict | None:
+    match = re.search(
+        r"(?:сделал\w*\s+|выполнил\w*\s+|начну\s+с\s+|начинаю\s+с\s+)?"
+        r"(?P<name>.+?)\s+"
+        r"(?P<weight>\d{1,3}(?:[.,]\d+)?)\s*(?:кг\s*)?(?:на|[xх×])\s*"
+        r"(?P<reps>\d{1,2})\b",
+        text,
+        re.IGNORECASE,
+    )
+    if not match:
+        return None
+
+    name = clean_exercise_name(match.group("name"))
+    if not re.search(r"[a-zа-яё]", name, re.IGNORECASE):
+        return None
+
+    weight = float(match.group("weight").replace(",", "."))
+    reps = int(match.group("reps"))
+    return {
+        "type": "strength",
+        "name": name,
+        "duration_min": None,
+        "rpe": None,
+        "exercises": [
+            {
+                "name": name,
+                "sets": [{"weight_kg": weight, "reps": reps, "raw": text}],
+                "raw": text,
+            }
+        ],
+        "raw": text,
+    }
 
 
 def parse_training_log(text: str) -> dict:
@@ -1233,6 +1274,10 @@ def parse_training_log(text: str) -> dict:
             ],
             "raw": text,
         }
+
+    explicit_set = parse_explicit_training_set(text)
+    if explicit_set:
+        return explicit_set
 
     return {
         "type": "cardio"
@@ -1588,6 +1633,7 @@ def ensure_active_training(daily_log: dict, now: datetime) -> dict:
         active.setdefault("exercise_index", 0)
         active.setdefault("current_set_index", 0)
         active.setdefault("started_at", now.strftime("%H:%M"))
+        active.setdefault("last_active_at", active.get("started_at") or now.strftime("%H:%M"))
         daily_log["active_training"] = active
         return session
 
@@ -1601,8 +1647,33 @@ def ensure_active_training(daily_log: dict, now: datetime) -> dict:
         "exercise_index": 0,
         "current_set_index": 0,
         "started_at": now.strftime("%H:%M"),
+        "last_active_at": now.strftime("%H:%M"),
     }
     return session
+
+
+def active_training_timestamp(daily_log: dict, active_training: dict) -> datetime | None:
+    time_value = active_training.get("last_active_at") or active_training.get("started_at")
+    if not time_value:
+        return None
+    log_date = daily_log.get("date") or today_str()
+    try:
+        return datetime.fromisoformat(f"{log_date}T{time_value}").replace(tzinfo=TIMEZONE)
+    except ValueError:
+        return None
+
+
+def active_training_is_fresh(
+    daily_log: dict, now: datetime, max_age_hours: int = 4
+) -> bool:
+    active = daily_log.get("active_training") or {}
+    if not active:
+        return False
+    timestamp = active_training_timestamp(daily_log, active)
+    if timestamp is None:
+        return False
+    elapsed_seconds = (now - timestamp).total_seconds()
+    return 0 <= elapsed_seconds <= max_age_hours * 3600
 
 
 def current_session_exercise(session: dict, active_training: dict | None) -> dict:
@@ -1652,6 +1723,7 @@ def switch_active_training_exercise(daily_log: dict, text: str) -> dict | None:
             continue
         active["exercise_index"] = index
         active["current_set_index"] = 0
+        active["last_active_at"] = datetime.now(TIMEZONE).strftime("%H:%M")
         daily_log["active_training"] = active
         return {
             "session": session,
@@ -1723,6 +1795,7 @@ def append_active_training_set(
     training_entry["updated_at"] = now.strftime("%H:%M")
     training_entry["updated_by"] = username
     active["current_set_index"] = len(exercise_log["sets"])
+    active["last_active_at"] = now.strftime("%H:%M")
     daily_log["active_training"] = active
 
     return {
@@ -1790,6 +1863,7 @@ def advance_active_training_exercise(daily_log: dict) -> str:
 
     active["exercise_index"] = next_index
     active["current_set_index"] = 0
+    active["last_active_at"] = datetime.now(TIMEZONE).strftime("%H:%M")
     daily_log["active_training"] = active
     return format_next_exercise_response(session, exercises[next_index])
 
@@ -1829,7 +1903,7 @@ def format_training_set_response(daily_log: dict) -> str:
 
 
 def format_training_set_needs_exercise_response() -> str:
-    return "К какому упражнению записать подход? Напиши название упражнения из программы."
+    return "К какому упражнению записать? Например: жим лёжа 60 кг на 8."
 
 
 def format_exercise_plan_line(exercise: dict) -> str:
@@ -1926,7 +2000,12 @@ def append_log_entry(text: str, username: str | None) -> tuple[str, dict]:
         re.IGNORECASE,
     )
     single_set_data = parse_single_set_log(text)
+    explicit_set_data = parse_explicit_training_set(text)
     active_training = daily_log.get("active_training")
+    if active_training and not active_training_is_fresh(daily_log, now_dt):
+        daily_log["active_training"] = None
+        active_training = None
+
     if active_training and not single_set_data and not full_strength_log:
         switch_result = switch_active_training_exercise(daily_log, text)
         if switch_result:
@@ -1937,6 +2016,7 @@ def append_log_entry(text: str, username: str | None) -> tuple[str, dict]:
     if (
         active_training
         and single_set_data
+        and not explicit_set_data
         and not full_strength_log
         and not is_food_message(text)
     ):
@@ -1946,7 +2026,8 @@ def append_log_entry(text: str, username: str | None) -> tuple[str, dict]:
             daily_log["_last_training_set"] = set_result
             return "training_set", daily_log
 
-    if single_set_data and not active_training and not full_strength_log and not is_food_message(text):
+    if single_set_data and not active_training and not explicit_set_data and not full_strength_log and not is_food_message(text):
+        write_daily_log(daily_log)
         return "training_set_needs_exercise", daily_log
 
     should_update_recent_meal = entry_type == "note" or (
@@ -1976,6 +2057,10 @@ def append_log_entry(text: str, username: str | None) -> tuple[str, dict]:
         )
     elif entry_type == "training":
         training_entry = parse_training_log(text)
+        if active_training and training_entry.get("exercises"):
+            switch_active_training_exercise(
+                daily_log, str(training_entry["exercises"][0].get("name") or "")
+            )
         training_entry["time"] = now
         training_entry["logged_by"] = username
         if update_recent_training_if_duplicate(daily_log, training_entry, username, now_dt):
