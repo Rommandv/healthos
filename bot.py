@@ -167,6 +167,48 @@ def load_program_exercises() -> list[dict]:
     return exercises
 
 
+def load_program_schedule() -> list[dict]:
+    program = load_yaml_file(PROGRAM_FILE)
+    return [
+        session
+        for session in (program.get("schedule") or [])
+        if session.get("name")
+    ]
+
+
+def select_today_training_session() -> dict:
+    schedule = load_program_schedule()
+    if not schedule:
+        return {}
+
+    iso_day = datetime.now(TIMEZONE).isoweekday()
+    for session in schedule:
+        try:
+            if int(session.get("day")) == iso_day:
+                return session
+        except (TypeError, ValueError):
+            continue
+    return schedule[0]
+
+
+def select_in_session_training_session() -> dict:
+    session = select_today_training_session()
+    if session.get("exercises"):
+        return session
+    for candidate in load_program_schedule():
+        if candidate.get("exercises"):
+            return candidate
+    return session
+
+
+def find_program_session(session_name: str | None) -> dict:
+    normalized_target = normalize_exercise_name(session_name)
+    for session in load_program_schedule():
+        if normalize_exercise_name(session.get("name")) == normalized_target:
+            return session
+    return {}
+
+
 def exercise_query_terms(exercise_text: str) -> list[str]:
     normalized = normalize_exercise_name(exercise_text)
     terms = [normalized] if normalized else []
@@ -496,6 +538,7 @@ def default_daily_log(date: str) -> dict:
             "nsdr_min": None,
             "stress": None,
         },
+        "active_training": None,
         "notes": [],
     }
 
@@ -517,6 +560,7 @@ def read_daily_log(date: str | None = None) -> dict:
     template.setdefault("notes", [])
     template.setdefault("sleep", {})
     template.setdefault("recovery", {})
+    template.setdefault("active_training", None)
     return template
 
 
@@ -998,8 +1042,21 @@ def update_recent_meal_if_clarification(
     return True
 
 
+def is_training_session_query(text: str) -> bool:
+    normalized = text.lower().replace("ё", "е")
+    return bool(
+        re.search(
+            r"(начн[её]м\s+тренировк|начать\s+тренировк|"
+            r"что\s+мне\s+сегодня\s+делать\s+в\s+зале\s+пошагово|"
+            r"какой\s+первый\s+подход|первый\s+подход|"
+            r"следующий\s+подход|что\s+дальше|продолжим\s+тренировк)",
+            normalized,
+        )
+    )
+
+
 def is_training_query_message(text: str) -> bool:
-    if is_replacement_query(text):
+    if is_replacement_query(text) or is_training_session_query(text):
         return True
     normalized = text.lower()
     training_context = re.search(
@@ -1431,6 +1488,107 @@ def format_training_log_response(entry_type: str, daily_log: dict) -> str:
             f"{header}:\n{training_log_summary(training_entry)}",
             f"Прогресс:\n{feedback['progress']}",
             f"Следующий раз:\n{feedback['next']}",
+        ]
+    )
+
+
+def training_session_query_kind(text: str) -> str:
+    normalized = text.lower().replace("ё", "е")
+    if re.search(r"(следующий\s+подход|что\s+дальше|продолжим\s+тренировк)", normalized):
+        return "next"
+    return "start"
+
+
+def ensure_active_training(daily_log: dict, now: datetime) -> dict:
+    active = daily_log.get("active_training") or {}
+    session = find_program_session(active.get("session_name"))
+    if session:
+        return session
+
+    session = select_in_session_training_session()
+    if not session:
+        daily_log["active_training"] = None
+        return {}
+
+    daily_log["active_training"] = {
+        "session_name": session.get("name"),
+        "exercise_index": 0,
+        "started_at": now.strftime("%H:%M"),
+    }
+    return session
+
+
+def current_session_exercise(session: dict, active_training: dict | None) -> dict:
+    exercises = session.get("exercises") or []
+    if not exercises:
+        return {}
+    try:
+        index = int((active_training or {}).get("exercise_index") or 0)
+    except (TypeError, ValueError):
+        index = 0
+    index = max(0, min(index, len(exercises) - 1))
+    return exercises[index]
+
+
+def format_exercise_plan_line(exercise: dict) -> str:
+    name = str(exercise.get("name") or "упражнение").strip()
+    sets = exercise.get("sets")
+    reps = exercise.get("reps")
+    rpe = exercise.get("rpe")
+    volume = f"{sets}×{reps}" if sets and reps else str(reps or "рабочий диапазон")
+    rpe_text = f", RPE {rpe}" if rpe else ""
+    return f"{name} — {volume}{rpe_text}"
+
+
+def training_log_prompt_for_exercise(exercise: dict) -> str:
+    name = str(exercise.get("name") or "упражнение").strip()
+    return f"\"{name} {{вес}} кг на {{повторы}}\""
+
+
+def format_training_session_response(daily_log: dict, user_text: str) -> str:
+    kind = training_session_query_kind(user_text)
+    now = datetime.now(TIMEZONE)
+    session = ensure_active_training(daily_log, now)
+    active = daily_log.get("active_training") or {}
+    session_name = str(session.get("name") or "тренировка").strip()
+    exercise = current_session_exercise(session, active)
+
+    if not exercise:
+        duration = session.get("duration_min")
+        intensity = session.get("intensity")
+        first_line = (
+            f"{session_name} — {duration} мин"
+            if duration is not None
+            else session_name
+        )
+        if intensity:
+            first_line = f"{first_line}, {intensity}"
+        return "\n\n".join(
+            [
+                f"Сегодня:\n{session_name}",
+                f"Первое:\n{first_line}",
+                "Старт:\nРазминка 5–10 мин → держи разговорный темп.",
+                "После блока напиши:\n\"30 минут Zone 2 на велике\"",
+            ]
+        )
+
+    exercise_line = format_exercise_plan_line(exercise)
+    if kind == "next":
+        return "\n\n".join(
+            [
+                f"Сегодня:\n{session_name}",
+                f"Текущее:\n{exercise_line}",
+                "Дальше:\nСделай подход и залогируй его, я сохраню вес/повторы.",
+                f"После подхода напиши:\n{training_log_prompt_for_exercise(exercise)}",
+            ]
+        )
+
+    return "\n\n".join(
+        [
+            f"Сегодня:\n{session_name}",
+            f"Первое:\n{exercise_line}",
+            "Старт:\nРазминка 5–10 мин → 1–2 лёгких разминочных подхода.",
+            f"После подхода напиши:\n{training_log_prompt_for_exercise(exercise)}",
         ]
     )
 
@@ -2092,6 +2250,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     if entry_type in ("training", "training_update"):
         await update.message.reply_text(format_training_log_response(entry_type, daily_log))
+        return
+
+    if is_training_session_query(text):
+        answer = format_training_session_response(daily_log, text)
+        write_daily_log(daily_log)
+        await update.message.reply_text(answer)
         return
 
     unknown_replacement_message = replacement_pattern_unknown_message(text)
