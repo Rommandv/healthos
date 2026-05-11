@@ -478,7 +478,7 @@ def context_files_for_intent(intent: str) -> tuple[Path, ...]:
         return (DIRECTIVES_FILE, USER_PROFILE_FILE, STRATEGY_FILE, PROGRAM_FILE)
     if intent == "biomarkers_imaging":
         return (DIRECTIVES_FILE, USER_PROFILE_FILE, BIOMARKERS_FILE)
-    return (USER_PROFILE_FILE, STRATEGY_FILE)
+    return (DIRECTIVES_FILE, USER_PROFILE_FILE, STRATEGY_FILE)
 
 
 def should_include_daily_log(intent: str) -> bool:
@@ -820,18 +820,58 @@ def extract_carbs(text: str) -> int | None:
     return int(match.group(1)) if match else None
 
 
+def is_question_message(text: str) -> bool:
+    stripped = text.strip()
+    if stripped.endswith("?"):
+        return True
+    normalized = stripped.lower()
+    return bool(
+        re.search(
+            r"(?<!\w)(стоит|можно|надо|нужно|что\s+делать|как\s+(?:мне|нам|лучше))(?!\w)",
+            normalized,
+        )
+    )
+
+
+def is_planning_or_advice_query(text: str) -> bool:
+    normalized = text.lower().replace("ё", "е")
+    return bool(
+        re.search(
+            r"(напиши|посоветуй|распиши|подготов\w*|"
+            r"после\s+перерыв\w*|перед\s+тренировк\w*|"
+            r"еда\s+и\s+(?:сама\s+)?тренировк\w*|"
+            r"что\s+делать|как\s+лучше|как\s+(?:мне|нам|коротко))",
+            normalized,
+        )
+    )
+
+
 def is_food_message(text: str) -> bool:
+    if is_planning_or_advice_query(text):
+        return False
     normalized = text.lower()
     food_pattern = (
         r"(?<!\w)("
         r"еда|ел|ела|поел\w*|съел\w*|завтрак\w*|обед\w*|ужин\w*|перекус\w*|"
         r"калори\w*|ккал|белок|жир\w*|углевод\w*|бжу|кбжу|"
         r"омлет|яйц\w*|тост|бургер|картошк\w*|рис|куриц\w*|творог|йогурт|"
-        r"хлеб|вареник\w*|соус|морожен\w*|кола|салат|суп|мясо|рыба|"
+        r"хлеб|вареник\w*|морожен\w*|кола|суп|мясо|"
         r"meal|ate|food|protein|fat|carb\w*"
         r")(?!\w)"
     )
-    return bool(re.search(food_pattern, normalized, re.IGNORECASE))
+    if re.search(food_pattern, normalized, re.IGNORECASE):
+        return True
+
+    narrow_food_pattern = r"(?<!\w)(соус\w*|салат\w*|рыб[ауыеой]?)(?!\w)"
+    consumption_pattern = (
+        r"(?<!\w)(ел|ела|съел\w*|поел\w*|выпил\w*|перекусил\w*|"
+        r"завтрак\w*|обед\w*|ужин\w*|добавил)(?!\w)"
+    )
+    if re.search(narrow_food_pattern, normalized, re.IGNORECASE) and re.search(
+        consumption_pattern, normalized, re.IGNORECASE
+    ):
+        return True
+    return False
 
 
 def is_multi_item_food(text: str) -> bool:
@@ -1977,9 +2017,12 @@ def classify_entry(text: str) -> str:
     normalized = text.lower()
     if is_training_query_message(text):
         return "training_query"
-    if re.search(r"(?<!\w)(вес|weight)(?!\w)", normalized):
+    if is_planning_or_advice_query(text):
+        return "note"
+    interrogative = is_question_message(text)
+    if not interrogative and re.search(r"(?<!\w)(вес|weight)(?!\w)", normalized):
         return "weight"
-    if re.search(r"(?<!\w)(сон|спал\w*|sleep)(?!\w)", normalized):
+    if not interrogative and re.search(r"(?<!\w)(сон|спал\w*|sleep)(?!\w)", normalized):
         return "sleep"
     if is_training_log_message(text):
         return "training"
@@ -1989,25 +2032,26 @@ def classify_entry(text: str) -> str:
 
 
 def append_log_entry(text: str, username: str | None) -> tuple[str, dict]:
+    clean_text = re.sub(r"^\s*\d+[.)]\s*", "", text).strip() or text
     daily_log = read_daily_log()
-    entry_type = classify_entry(text)
+    entry_type = classify_entry(clean_text)
     now_dt = datetime.now(TIMEZONE)
     now = now_dt.strftime("%H:%M")
 
     full_strength_log = re.search(
         r"(\d{1,2}\s*подход|\d{1,2}\s*[xх×]\s*\d{1,2}\s+\d{1,3}(?:[.,]\d+)?\s*кг)",
-        text,
+        clean_text,
         re.IGNORECASE,
     )
-    single_set_data = parse_single_set_log(text)
-    explicit_set_data = parse_explicit_training_set(text)
+    single_set_data = parse_single_set_log(clean_text)
+    explicit_set_data = parse_explicit_training_set(clean_text)
     active_training = daily_log.get("active_training")
     if active_training and not active_training_is_fresh(daily_log, now_dt):
         daily_log["active_training"] = None
         active_training = None
 
     if active_training and not single_set_data and not full_strength_log:
-        switch_result = switch_active_training_exercise(daily_log, text)
+        switch_result = switch_active_training_exercise(daily_log, clean_text)
         if switch_result:
             write_daily_log(daily_log)
             daily_log["_active_exercise_switch"] = switch_result
@@ -2018,7 +2062,7 @@ def append_log_entry(text: str, username: str | None) -> tuple[str, dict]:
         and single_set_data
         and not explicit_set_data
         and not full_strength_log
-        and not is_food_message(text)
+        and not is_food_message(clean_text)
     ):
         set_result = append_active_training_set(daily_log, single_set_data, username, now_dt)
         if set_result:
@@ -2026,15 +2070,18 @@ def append_log_entry(text: str, username: str | None) -> tuple[str, dict]:
             daily_log["_last_training_set"] = set_result
             return "training_set", daily_log
 
-    if single_set_data and not active_training and not explicit_set_data and not full_strength_log and not is_food_message(text):
+    if single_set_data and not active_training and not explicit_set_data and not full_strength_log and not is_food_message(clean_text):
         write_daily_log(daily_log)
         return "training_set_needs_exercise", daily_log
 
-    should_update_recent_meal = entry_type == "note" or (
-        entry_type == "meal"
-        and looks_like_meal_clarification(text)
-        and not looks_like_new_meal(text)
-    )
+    should_update_recent_meal = (
+        entry_type == "note"
+        or (
+            entry_type == "meal"
+            and looks_like_meal_clarification(clean_text)
+            and not looks_like_new_meal(clean_text)
+        )
+    ) and not is_question_message(clean_text) and not is_planning_or_advice_query(clean_text)
     if should_update_recent_meal and update_recent_meal_if_clarification(
         daily_log, text, username, now_dt
     ):
@@ -2045,18 +2092,19 @@ def append_log_entry(text: str, username: str | None) -> tuple[str, dict]:
         return entry_type, daily_log
 
     if entry_type == "weight":
-        daily_log["weight_morning"] = parse_number(text)
+        daily_log["weight_morning"] = parse_number(clean_text)
     elif entry_type == "sleep":
         daily_log["sleep"].update(
             {
-                "hours": parse_number(text),
+                "hours": parse_number(clean_text),
                 "quality": None,
                 "raw": text,
                 "logged_at": now,
             }
         )
     elif entry_type == "training":
-        training_entry = parse_training_log(text)
+        training_entry = parse_training_log(clean_text)
+        training_entry["raw"] = text
         if active_training and training_entry.get("exercises"):
             switch_active_training_exercise(
                 daily_log, str(training_entry["exercises"][0].get("name") or "")
@@ -2072,10 +2120,10 @@ def append_log_entry(text: str, username: str | None) -> tuple[str, dict]:
             {
                 "time": now,
                 "description": text,
-                "calories": extract_calories(text),
-                "protein_g": extract_protein(text),
-                "fat_g": extract_fat(text),
-                "carbs_g": extract_carbs(text),
+                "calories": extract_calories(clean_text),
+                "protein_g": extract_protein(clean_text),
+                "fat_g": extract_fat(clean_text),
+                "carbs_g": extract_carbs(clean_text),
                 "notes": None,
                 "logged_by": username,
             }
@@ -2649,18 +2697,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     username = update.effective_user.username if update.effective_user else None
     entry_type, daily_log = append_log_entry(text, username)
-    detected_intent = detect_intent(text)
-    food_like_message = detected_intent == "meal" or is_food_message(text)
+    clean_text = re.sub(r"^\s*\d+[.)]\s*", "", text).strip() or text
+    detected_intent = detect_intent(clean_text)
+    food_like_message = (
+        (detected_intent == "meal" or is_food_message(clean_text))
+        and not is_planning_or_advice_query(clean_text)
+        and not is_question_message(clean_text)
+    )
     if food_like_message and entry_type not in ("meal", "meal_update"):
         now = datetime.now(TIMEZONE).strftime("%H:%M")
         daily_log["meals"].append(
             {
                 "time": now,
                 "description": text,
-                "calories": extract_calories(text),
-                "protein_g": extract_protein(text),
-                "fat_g": extract_fat(text),
-                "carbs_g": extract_carbs(text),
+                "calories": extract_calories(clean_text),
+                "protein_g": extract_protein(clean_text),
+                "fat_g": extract_fat(clean_text),
+                "carbs_g": extract_carbs(clean_text),
                 "notes": None,
                 "logged_by": username,
             }
