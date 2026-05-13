@@ -456,14 +456,16 @@ def load_health_context(user_text: str | None = None, daily_log: dict | None = N
 
 def detect_intent(text: str) -> str:
     normalized = text.lower()
-    if re.search(r"(сон|sleep|спал\w*|бессонниц\w*|проснул\w*|л[её]г|выспал\w*|восстановлен\w*|сауна|баня|стресс|nsdr)", normalized):
+    if re.search(r"(сон|sleep|спал\w*|спать\b|бессонниц\w*|проснул\w*|л[её]г|выспал\w*|восстановлен\w*|сауна|баня|стресс|nsdr)", normalized):
         return "sleep_recovery"
     if re.search(r"(анализ\w*|apob|ldl|hdl|hba1c|инсулин|эхо|эхокг|узи|мрт|кт|imaging|липид\w*|биомаркер\w*)", normalized, re.IGNORECASE):
         return "biomarkers_imaging"
     if is_training_query_message(text) or is_training_log_message(text):
         return "training"
-    if re.search(r"(трен\w*|зал|бег\w*|кардио|zone|зон\w*|ходьб\w*|workout|gym|упражнен\w*)", normalized):
+    if re.search(r"(трен\w*|зал|бег\w*|кардио|zone|зон\w*|ходьб\w*|workout|gym|упражнен\w*|эллипс\w*|элипс\w*)", normalized):
         return "training"
+    if is_decision_or_planning_question(text):
+        return "general"
     if is_food_message(text):
         return "meal"
     return "general"
@@ -846,8 +848,37 @@ def is_planning_or_advice_query(text: str) -> bool:
     )
 
 
+def is_decision_or_planning_question(text: str) -> bool:
+    """True when user is deliberating what to do, not reporting a completed action."""
+    normalized = text.lower().replace("ё", "е")
+    if re.search(r"думаю\s+(?:сделать|делать|пойти|идти|попробовать|начать)", normalized):
+        return True
+    if re.search(r"\bили\b.{0,25}\bспать\b", normalized):
+        return True
+    if re.search(
+        r"(?<!\w)(стоит\s+ли|делать\s+ли|можно\s+ли|что\s+лучше|как\s+лучше)(?!\w)",
+        normalized,
+    ):
+        return True
+    if re.search(
+        r"(?:трени\w*|сауна|прогулк\w*|эллипс\w*|элипс\w*|кардио)\s+или\b",
+        normalized,
+    ):
+        return True
+    if re.search(
+        r"\bили\s+(?:трени\w*|прогулк\w*|бег\b|спать\b|пойти\b|идти\b)",
+        normalized,
+    ):
+        return True
+    if re.search(r"после\s+ужин\w+\s+думаю", normalized):
+        return True
+    return False
+
+
 def is_food_message(text: str) -> bool:
     if is_planning_or_advice_query(text):
+        return False
+    if is_decision_or_planning_question(text):
         return False
     normalized = text.lower()
     food_pattern = (
@@ -2019,6 +2050,8 @@ def classify_entry(text: str) -> str:
         return "training_query"
     if is_planning_or_advice_query(text):
         return "note"
+    if is_decision_or_planning_question(text):
+        return "note"
     interrogative = is_question_message(text)
     if not interrogative and re.search(r"(?<!\w)(вес|weight)(?!\w)", normalized):
         return "weight"
@@ -2703,6 +2736,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         (detected_intent == "meal" or is_food_message(clean_text))
         and not is_planning_or_advice_query(clean_text)
         and not is_question_message(clean_text)
+        and not is_decision_or_planning_question(clean_text)
     )
     if food_like_message and entry_type not in ("meal", "meal_update"):
         now = datetime.now(TIMEZONE).strftime("%H:%M")
