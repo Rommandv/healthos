@@ -2690,7 +2690,19 @@ async def health_review(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if not update.message:
         return
 
-    await reply_text_safely(update, build_health_review_brief())
+    user_text = update.message.text or "/health-review"
+    if not os.getenv("ANTHROPIC_API_KEY"):
+        await reply_text_safely(update, build_health_review_brief())
+        return
+
+    review_context, _ = build_health_review_context()
+    try:
+        answer = await asyncio.to_thread(
+            call_anthropic_health_review, review_context, user_text
+        )
+    except Exception:
+        answer = build_health_review_brief()
+    await reply_text_safely(update, answer)
 
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
