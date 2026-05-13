@@ -2282,6 +2282,7 @@ def build_health_review_system_prompt() -> str:
 2. ...
 3. ...
 - Решение должно быть одним из: keep / adjust / deload / maintain.
+- Если coverage < 5/7 дней или данные неполные/грязные → решение: maintain или recovery focus. Не назначай aggressive deload при недостатке данных.
 - Всегда заверши все 3 шага полностью; не заканчивай ответ на середине фразы.
 """
 
