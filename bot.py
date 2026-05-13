@@ -85,6 +85,7 @@ RUNTIME_CONTEXT_INSTRUCTIONS = """Coach runtime boundaries:
     exercise_replace: "Замена:" old -> new -> "Почему:" same movement pattern -> "Как делать:" sets/reps/RPE -> "Старт:" choose available option.
     ask/knowledge: "Вывод:" one line -> "Для тебя:" max 2 bullets -> "Протокол:" max 2 steps -> "Источники:" short names if knowledge was used.
     biomarkers_imaging: "Вывод:" calm summary -> "Контекст:" baseline/current/missing -> "Действие:" max 2 safe steps, doctor-level decisions with a doctor.
+    behaviorist: "Без паники:" one calm line, zero judgment -> "Факт:" what happened factually (if food was logged mention it briefly; if training missed state it) -> "Один шаг:" single concrete action (water / 10–20 min walk / next protein meal / sleep). No lectures. No "ты должен". No calorie breakdown unless user asks. Max 5 lines total.
 - Core deterministic meal contracts:
   - meal_log: "Записал: {normalized_food_description}" -> "Оценка: {kcal} ккал | Б {protein} г | Ж {fat} г | У {carbs} г" -> "Остаток дня: {remaining_kcal} ккал | Б {remaining_protein} г | Ж {remaining_fat} г | У {remaining_carbs} г" -> "Следующий шаг: {one nutrition step}". Description cannot be empty. Do not ask grams by default. Use approximate/range if not exact. Exact KBJU/label/menu data is source of truth. No formula placeholders.
   - meal_update: "Обновил запись: {normalized_food_description}" -> "Новая оценка: ..." -> "Остаток дня: ..." -> "Следующий шаг: ...". Corrections within 30 minutes update previous meal instead of duplicate. Exact user data is source of truth.
@@ -460,6 +461,8 @@ def detect_intent(text: str) -> str:
         return "sleep_recovery"
     if re.search(r"(анализ\w*|apob|ldl|hdl|hba1c|инсулин|эхо|эхокг|узи|мрт|кт|imaging|липид\w*|биомаркер\w*)", normalized, re.IGNORECASE):
         return "biomarkers_imaging"
+    if is_setback_message(text):
+        return "behaviorist"
     if is_training_query_message(text) or is_training_log_message(text):
         return "training"
     if re.search(r"(трен\w*|зал|бег\w*|кардио|zone|зон\w*|ходьб\w*|workout|gym|упражнен\w*|эллипс\w*|элипс\w*)", normalized):
@@ -480,6 +483,8 @@ def context_files_for_intent(intent: str) -> tuple[Path, ...]:
         return (DIRECTIVES_FILE, USER_PROFILE_FILE, STRATEGY_FILE, PROGRAM_FILE)
     if intent == "biomarkers_imaging":
         return (DIRECTIVES_FILE, USER_PROFILE_FILE, BIOMARKERS_FILE)
+    if intent == "behaviorist":
+        return (DIRECTIVES_FILE, USER_PROFILE_FILE, STRATEGY_FILE, PROGRAM_FILE)
     return (DIRECTIVES_FILE, USER_PROFILE_FILE, STRATEGY_FILE)
 
 
@@ -873,6 +878,22 @@ def is_decision_or_planning_question(text: str) -> bool:
     if re.search(r"после\s+ужин\w+\s+думаю", normalized):
         return True
     return False
+
+
+def is_setback_message(text: str) -> bool:
+    """True when user signals an emotional setback — binge, missed workout, self-judgment."""
+    normalized = text.lower().replace("ё", "е")
+    return bool(
+        re.search(
+            r"(?<!\w)(сорвалс\w*|переел\w*|слил\s+день|слила\s+день|"
+            r"день\s+испорч\w*|испортил\s+день|испортила\s+день|"
+            r"не\s+выдержал\w*|наелс\w*|наелась\w*|"
+            r"я\s+лох|облажалс\w*|облажалась\w*|"
+            r"все\s+испорт\w*|всё\s+испорт\w*|"
+            r"срыв\w*|binge|бинг\w*)(?!\w)",
+            normalized,
+        )
+    )
 
 
 def is_food_message(text: str) -> bool:
@@ -2059,6 +2080,8 @@ def classify_entry(text: str) -> str:
         return "sleep"
     if is_training_log_message(text):
         return "training"
+    if is_setback_message(text):
+        return "meal" if is_food_message(text) else "note"
     if is_food_message(text):
         return "meal"
     return "note"
@@ -2510,6 +2533,12 @@ def call_anthropic(user_text: str, entry_type: str, daily_log: dict) -> str:
             "\nMeal logging action: updated the recent meal entry; "
             'Telegram response must say "Обновил запись:", not "Записал:" or "записал новую".'
         )
+    if entry_type == "behaviorist":
+        entry_note = (
+            "\nBehaviorist mode: zero judgment, no lectures, no 'ты должен'. "
+            "Use behaviorist mini-format exactly: 'Без паники:' / 'Факт:' / 'Один шаг:'. "
+            "Max 5 lines. No calorie breakdown unless user explicitly asks."
+        )
 
     message = client.messages.create(
         model=ANTHROPIC_MODEL,
@@ -2734,6 +2763,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     detected_intent = detect_intent(clean_text)
     food_like_message = (
         (detected_intent == "meal" or is_food_message(clean_text))
+        and detected_intent != "behaviorist"
         and not is_planning_or_advice_query(clean_text)
         and not is_question_message(clean_text)
         and not is_decision_or_planning_question(clean_text)
@@ -2754,6 +2784,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
         write_daily_log(daily_log)
         entry_type = "meal"
+
+    if detected_intent == "behaviorist":
+        if not os.getenv("ANTHROPIC_API_KEY"):
+            await update.message.reply_text(
+                "Без паники: всё поправимо.\n\nОдин шаг: стакан воды, следующий белковый приём по плану."
+            )
+            return
+        try:
+            answer = await asyncio.to_thread(call_anthropic, text, "behaviorist", daily_log)
+        except Exception:
+            answer = "Без паники: всё поправимо.\n\nОдин шаг: стакан воды, следующий белковый приём по плану."
+        await update.message.reply_text(answer)
+        return
 
     if entry_type == "training_set":
         await update.message.reply_text(format_training_set_response(daily_log))
