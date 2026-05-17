@@ -2681,10 +2681,142 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
+def sum_meal_totals(meals: list[dict]) -> dict[str, int]:
+    """Simple sum of per-meal nutrition values for /today summary.
+    Different from meal_totals(): includes every meal that has any value,
+    no multi-item ignore logic. Treats missing fields as 0.
+    """
+    totals = {"calories": 0, "protein_g": 0, "fat_g": 0, "carbs_g": 0}
+    for meal in meals:
+        for field in totals:
+            value = meal.get(field)
+            if isinstance(value, (int, float)):
+                totals[field] += int(value)
+    return totals
+
+
+def format_today_date(date_str: str) -> str:
+    try:
+        date_obj = datetime.strptime(date_str, "%Y-%m-%d")
+    except (TypeError, ValueError):
+        return date_str
+    weekdays = (
+        "Понедельник", "Вторник", "Среда", "Четверг",
+        "Пятница", "Суббота", "Воскресенье",
+    )
+    months = (
+        "января", "февраля", "марта", "апреля", "мая", "июня",
+        "июля", "августа", "сентября", "октября", "ноября", "декабря",
+    )
+    return f"{weekdays[date_obj.weekday()]}, {date_obj.day} {months[date_obj.month - 1]}"
+
+
+def derive_today_next_step(daily_log: dict) -> str:
+    meals = daily_log.get("meals") or []
+    training = daily_log.get("training") or []
+    sleep = daily_log.get("sleep") or {}
+    weight = daily_log.get("weight_morning")
+    targets = nutrition_targets()
+
+    if meals and targets.get("protein_g"):
+        totals = sum_meal_totals(meals)
+        remaining_p = targets.get("protein_g", 0) - totals.get("protein_g", 0)
+        if remaining_p > 30:
+            return f"добери белок (~{remaining_p}г) в следующем приёме."
+    if weight in (None, "", 0):
+        return "утром записать вес."
+    if not sleep.get("hours"):
+        return "вечером записать сон."
+    if not training:
+        return "если сегодня тренировка — запиши после."
+    return "продолжай в темпе."
+
+
+def format_today_summary(daily_log: dict) -> str:
+    meals = daily_log.get("meals") or []
+    training = daily_log.get("training") or []
+    sleep = daily_log.get("sleep") or {}
+    notes = daily_log.get("notes") or []
+    weight = daily_log.get("weight_morning")
+    active = daily_log.get("active_training")
+
+    has_any = bool(
+        meals or training or notes or sleep.get("hours") or weight or active
+    )
+    if not has_any:
+        return (
+            "Сегодня пока пусто.\n"
+            "Запиши еду, тренировку или сон — и я соберу день."
+        )
+
+    blocks = [f"Сегодня:\n{format_today_date(daily_log.get('date') or today_str())}"]
+
+    if meals:
+        totals = sum_meal_totals(meals)
+        meal_count = len(meals)
+        word = plural_ru(meal_count, "приём", "приёма", "приёмов")
+        kcal = totals.get("calories", 0)
+        prot = totals.get("protein_g", 0)
+        meal_line = f"{meal_count} {word} · ~{kcal} ккал · Б {prot} г"
+        recent = [
+            str(m.get("description") or "").strip()
+            for m in meals[-3:]
+            if (m.get("description") or "").strip()
+        ]
+        recent_line = " · ".join(d[:40] for d in recent)
+        meal_block = "Еда:\n" + meal_line
+        if recent_line:
+            meal_block += "\n" + recent_line
+        blocks.append(meal_block)
+
+        targets = nutrition_targets()
+        if targets.get("calories"):
+            r_kcal = max(targets.get("calories", 0) - totals.get("calories", 0), 0)
+            r_p = max(targets.get("protein_g", 0) - totals.get("protein_g", 0), 0)
+            r_f = max(targets.get("fat_g", 0) - totals.get("fat_g", 0), 0)
+            r_c = max(targets.get("carbs_g", 0) - totals.get("carbs_g", 0), 0)
+            blocks.append(
+                f"Остаток:\n~{r_kcal} ккал · Б {r_p} г / Ж {r_f} г / У {r_c} г"
+            )
+
+    training_parts: list[str] = []
+    if active:
+        session = active.get("session_name") or "тренировка"
+        ex_idx = int(active.get("exercise_index") or 0)
+        training_parts.append(f"активна: {session} (упр. {ex_idx + 1})")
+    if training:
+        last = training[-1]
+        name = last.get("name") or last.get("session_name") or "тренировка"
+        exs = last.get("exercises") or []
+        sets_total = sum(len(e.get("sets") or []) for e in exs)
+        if exs or sets_total:
+            training_parts.append(f"{name} · {len(exs)} упр. · {sets_total} подходов")
+        else:
+            training_parts.append(str(name))
+    if not training_parts:
+        training_parts.append("не логировалась")
+    blocks.append("Тренировка:\n" + "; ".join(training_parts))
+
+    sw_parts: list[str] = []
+    if sleep.get("hours"):
+        sw_parts.append(f"сон {sleep['hours']}ч")
+    if weight:
+        sw_parts.append(f"вес {weight}кг")
+    if sw_parts:
+        blocks.append("Сон / вес:\n" + " · ".join(sw_parts))
+
+    if notes:
+        n_count = len(notes)
+        n_word = plural_ru(n_count, "заметка", "заметки", "заметок")
+        blocks.append(f"Заметки:\n{n_count} {n_word}")
+
+    blocks.append(f"Один шаг:\n{derive_today_next_step(daily_log)}")
+    return "\n\n".join(blocks)
+
+
 async def today(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     daily_log = read_daily_log()
-    daily_log_text = yaml.safe_dump(daily_log, allow_unicode=True, sort_keys=False)
-    await update.message.reply_text(f"Лог за сегодня:\n{daily_log_text}")
+    await update.message.reply_text(format_today_summary(daily_log))
 
 
 async def health_review(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
