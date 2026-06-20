@@ -19,9 +19,9 @@ LDL, ApoB, CRP, сердечно-сосудистый риск, долголет
 - HDL: ⚠️ данных нет → следующие анализы
 
 **directives.yaml — выводы из биомаркеров:**
-- `nutrition.saturated_fat_limit_g: 15` — прямое следствие LDL 3.44 + CRP 5.1
-- `nutrition.omega3_minimum_g: 2` — anti-inflammatory (CRP), EPA+DHA; рыба или добавка
-- Эти цифры менять только через `/health-strategy` + новые анализы
+- `nutrition.saturated_fat_limit_g: null` — пока не выведено: нет свежего ApoB; по no-data policy «на глаз» не ставим
+- `nutrition.omega3_minimum_g: null` — пока не выведено: ждёт свежей липидной панели (ApoB/HDL/TG)
+- Эти значения выставит `/health-strategy` (CMO), когда появятся свежие анализы
 
 **Recovery Gate — связь с липидами:**
 - Хроническое YELLOW/RED → хронический стресс → ↑CRP → ↑CVD-риск
