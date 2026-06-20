@@ -4,20 +4,27 @@
 
 ## Runtime
 
-Бот всегда читает:
+Роль Coach задаётся встроенной инструкцией `RUNTIME_CONTEXT_INSTRUCTIONS` в `bot.py`, а не файлом `CLAUDE.md` — в runtime `CLAUDE.md` НЕ загружается.
 
-- `CLAUDE.md`
-- `data/strategic/directives.yaml`
-- `data/strategic/biomarkers.yaml`
-- `data/tactical/user_profile.yaml`
-- `data/tactical/strategy.md`
-- `data/tactical/training/program.yaml`
-- `data/tactical/nutrition/meals.yaml`
-- `data/tactical/logs/YYYY-MM-DD.yaml` за сегодня
+Файлы из `data/` подгружаются **по интенту** сообщения (`context_files_for_intent` в `bot.py`), не все сразу:
+
+| Интент | Контекст-файлы из `data/` | Лог дня |
+|---|---|---|
+| `meal` | directives, user_profile, strategy, nutrition/meals | да |
+| `training` | directives, user_profile, strategy, training/program | да |
+| `sleep_recovery` | directives, user_profile, strategy, training/program | да |
+| `biomarkers_imaging` | directives, user_profile, biomarkers | нет |
+| `behaviorist` | directives, user_profile, strategy, training/program | нет |
+| `general` (по умолчанию) | directives, user_profile, strategy | да |
+
+- `directives.yaml` и `user_profile.yaml` подгружаются при любом интенте.
+- `biomarkers.yaml` — только при `biomarkers_imaging`.
+- Лог дня (`data/tactical/logs/YYYY-MM-DD.yaml` за сегодня) — только для `meal / training / sleep_recovery / general` (`should_include_daily_log`).
 
 Бот не читает автоматически:
 
-- весь `knowledge/`
+- `CLAUDE.md` (роль зашита в `bot.py`)
+- весь `knowledge/` целиком
 - `knowledge/raw/**`
 - `knowledge/sources/**`
 - `knowledge/conflicts/**`
