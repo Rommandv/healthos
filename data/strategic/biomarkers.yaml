@@ -1,12 +1,11 @@
 metadata:
-  type: historical_baseline
-  status: not_current_labs
-  context: post_viral_recovery_ORVI
-  period: 2025-09-25_to_2025-10-05
-  updated_at: 2026-05-03
+  freshness_model: per_dataset
+  status: mixed
+  updated_at: 2026-06-20
   notes:
-    - "Historical baseline only. Do not treat as current health state."
-    - "CRP and WBC may reflect temporary post-viral inflammation."
+    - "Freshness is tracked per dataset block via its own `status` field (historical | current)."
+    - "Top-level status does not mark the whole file stale and does not override per-block status."
+    - "Historical panels (Sep-Oct 2025) were drawn during post-ORVI recovery; CRP/WBC there may reflect temporary inflammation."
 
 profile:
   sex: male
@@ -19,6 +18,7 @@ profile:
     - optimal_biomarkers
 
 biochemistry_late_2025_09:
+  status: historical
   glucose:
     value: 5.35
     unit: mmol/L
@@ -47,6 +47,7 @@ biochemistry_late_2025_09:
     unit: U/L
 
 cbc_2025_10_02:
+  status: historical
   WBC:
     value: 10.60
     unit: x10^9/L
@@ -74,12 +75,14 @@ cbc_2025_10_02:
     unit: mm/h
 
 hormones_early_2025_10:
+  status: historical
   TSH:
     value: 2.197
     unit: uIU/mL
     interpretation: within_reference_range
 
 inbody_2025_10_05:
+  status: historical
   weight:
     value: 78.0
     unit: kg
@@ -161,6 +164,7 @@ main_command:
 cardiac_imaging_2026_03_03:
   type: echocardiography
   date: 2026-03-03
+  status: current
   source: "БУЗОО Клиническая медико-санитарная часть №9, Омск"
   context: "Echocardiography / cardiac ultrasound"
 
