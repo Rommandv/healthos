@@ -1,16 +1,17 @@
-"""Regression harness for the write/role decision in bot.py.
+"""End-to-end regression harness for the write/role decision in bot.py.
 
-Covers the behavior-audit-2026-06-21 probe set:
-  A. must NOT write a fact (classify_entry -> "note")
-  B. must write the right fact (classify_entry -> weight/training/...)
-  C. write <-> role consistency (setback: no silent meal; role=behaviorist)
-  P4. pure question/planning is not appended to daily notes
-Plus the 7 intent-routing cases from the previous regression (detect_intent).
+Covers the behavior-audit-2026-06-21 probe set, but at the EFFECTIVE level:
+the real runtime writes a fact via append_log_entry's classify_entry AND via
+the food_like_message fallback in handle_message. This harness reproduces that
+combined decision (no real log file is touched — it is computed, not written),
+so it cannot give a false green like a classify_entry-only check would.
 
-Treats classify_entry / detect_intent / append_log_entry as black boxes
-(no new helper names referenced), so the same file runs both at BASELINE
-and after the P1-P4 fixes. No real log files are touched: append_log_entry's
-IO is monkeypatched to an in-memory dict.
+  A. must NOT write a fact (effective fact == "none")
+  B. must write the right fact (weight / training / ...)
+  C. write <-> role consistency (setback: no meal, role behaviorist)
+  MIXED. opinion + a real meal report still logs the meal
+  intent-7. detect_intent roles unchanged
+  P4. pure question/planning is not appended to daily notes (in-memory)
 
 Run: python3 tests/test_classify.py   (exit 0 = all pass)
 """
@@ -22,30 +23,66 @@ sys.path.insert(0, str(HEALTH_OS))
 
 import bot  # noqa: E402
 
-# A — false-positive writes: intention / opinion / question / complaint -> note
-A_CASES = [
-    "хочу скинуть вес к лету",
-    "вес встал колом, не падает",
-    "сон у меня плохой последнее время",
-    "хочу наладить сон",
-    "люблю омлет по утрам",
-    "какой омлет приготовить?",
-    "расскажи про белок",
+
+def effective_decision(msg: str) -> tuple[str, str]:
+    """Reproduce the runtime write decision (classify_entry + food_like_message
+    fallback from handle_message) without writing to a log. Returns (fact, role)
+    where fact is one of weight/sleep/training/meal/none."""
+    role = bot.detect_intent(msg)
+    entry_type = bot.classify_entry(msg)
+    food_like = (
+        (role == "meal" or bot.is_food_message(msg))
+        and role != "behaviorist"
+        and not bot.is_planning_or_advice_query(msg)
+        and not bot.is_question_message(msg)
+        and not bot.is_decision_or_planning_question(msg)
+    )
+    if entry_type in ("weight", "sleep", "training", "meal"):
+        fact = entry_type
+    elif food_like:
+        fact = "meal"
+    else:
+        fact = "none"
+    return fact, role
+
+
+def notes_count_after_append(msg: str) -> int:
+    """P4: call append_log_entry with in-memory log IO; return notes appended."""
+    orig_read, orig_write = bot.read_daily_log, bot.write_daily_log
+    bot.read_daily_log = lambda: {
+        "date": "test", "weight_morning": None, "sleep": {},
+        "meals": [], "training": [], "notes": [], "active_training": None,
+    }
+    bot.write_daily_log = lambda dl: None
+    try:
+        _type, dl = bot.append_log_entry(msg, "tester")
+        return len(dl.get("notes", []))
+    finally:
+        bot.read_daily_log, bot.write_daily_log = orig_read, orig_write
+
+
+# (section, message, expected_fact, expected_role | None)
+EFFECTIVE_CASES = [
+    # A — must not write a fact
+    ("A no-write", "хочу скинуть вес к лету", "none", None),
+    ("A no-write", "вес встал колом, не падает", "none", None),
+    ("A no-write", "сон у меня плохой последнее время", "none", None),
+    ("A no-write", "хочу наладить сон", "none", None),
+    ("A no-write", "люблю омлет по утрам", "none", "general"),
+    ("A no-write", "какой омлет приготовить?", "none", "general"),
+    ("A no-write", "расскажи про белок", "none", "general"),
+    # B — must write the right fact
+    ("B write-fact", "встал на весы — 82", "weight", None),
+    ("B write-fact", "сегодня 82 кг утром", "weight", None),
+    ("B write-fact", "пробежал 5 км утром", "training", None),
+    # C — write must agree with role (setback: no meal, behaviorist)
+    ("C role<->write", "сорвался, съел омлет вечером", "none", "behaviorist"),
+    # MIXED — opinion + a real meal report still logs the meal
+    ("MIXED", "съел омлет, люблю его", "meal", "meal"),
+    ("MIXED", "на обед был омлет", "meal", "meal"),
 ]
 
-# B — missed real facts
-B_CASES = [
-    ("встал на весы — 82", "weight"),
-    ("сегодня 82 кг утром", "weight"),
-    ("пробежал 5 км утром", "training"),
-]
-
-# C — write must agree with role: setback should not silently log a meal
-C_CASES = [
-    ("сорвался, съел омлет вечером", "note", "behaviorist"),
-]
-
-# intent-7 — previous detect_intent regression must not change
+# intent-7 — role routing must not regress (detect_intent)
 INTENT_CASES = [
     ("сорвался вечером, сожрал пол-холодильника", "behaviorist"),
     ("думаю съесть побольше белка, стоит ли?", "general"),
@@ -64,43 +101,22 @@ P4_CASES = [
 ]
 
 
-def notes_count_after_append(msg: str) -> int:
-    """Call append_log_entry with in-memory log IO; return notes appended."""
-    orig_read, orig_write = bot.read_daily_log, bot.write_daily_log
-    bot.read_daily_log = lambda: {
-        "date": "test", "weight_morning": None, "sleep": {},
-        "meals": [], "training": [], "notes": [], "active_training": None,
-    }
-    bot.write_daily_log = lambda dl: None
-    try:
-        _type, dl = bot.append_log_entry(msg, "tester")
-        return len(dl.get("notes", []))
-    finally:
-        bot.read_daily_log, bot.write_daily_log = orig_read, orig_write
-
-
 def main() -> int:
     rows = []  # (section, msg, expected, actual, ok)
 
-    for msg in A_CASES:
-        actual = bot.classify_entry(msg)
-        rows.append(("A no-write", msg, "note", actual, actual == "note"))
-
-    for msg, exp in B_CASES:
-        actual = bot.classify_entry(msg)
-        rows.append(("B write-fact", msg, exp, actual, actual == exp))
-
-    for msg, exp_cls, exp_role in C_CASES:
-        cls = bot.classify_entry(msg)
-        role = bot.detect_intent(msg)
-        rows.append((
-            "C role<->write", msg, f"{exp_cls}+{exp_role}",
-            f"{cls}+{role}", cls == exp_cls and role == exp_role,
-        ))
+    for sec, msg, exp_fact, exp_role in EFFECTIVE_CASES:
+        fact, role = effective_decision(msg)
+        if exp_role is None:
+            exp, act, ok = f"fact={exp_fact}", f"fact={fact}", fact == exp_fact
+        else:
+            exp = f"{exp_fact}/{exp_role}"
+            act = f"{fact}/{role}"
+            ok = fact == exp_fact and role == exp_role
+        rows.append((sec, msg, exp, act, ok))
 
     for msg, exp in INTENT_CASES:
-        actual = bot.detect_intent(msg)
-        rows.append(("intent-7", msg, exp, actual, actual == exp))
+        role = bot.detect_intent(msg)
+        rows.append(("intent-7", msg, f"role={exp}", f"role={role}", role == exp))
 
     for msg, exp in P4_CASES:
         n = notes_count_after_append(msg)
