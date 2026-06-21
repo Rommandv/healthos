@@ -80,6 +80,19 @@ EFFECTIVE_CASES = [
     # MIXED — opinion + a real meal report still logs the meal
     ("MIXED", "съел омлет, люблю его", "meal", "meal"),
     ("MIXED", "на обед был омлет", "meal", "meal"),
+    # ADVERSARIAL — false positives a probe-only set missed (gate review)
+    ("ADVERSARIAL", "день прошёл нормально", "none", None),
+    ("ADVERSARIAL", "прошёл собеседование сегодня", "none", None),
+    ("ADVERSARIAL", "прошёл мимо зала, не зашёл", "none", None),
+    ("ADVERSARIAL", "как прошёл день", "none", None),
+    ("ADVERSARIAL", "пожал 80 кг утром", "training", None),
+    ("ADVERSARIAL", "сейчас поем омлет", "none", "general"),
+    ("ADVERSARIAL", "буду есть омлет", "none", "general"),
+    # CONTROL — must keep working after the adversarial fixes
+    ("CONTROL", "пробежал 5 км", "training", None),
+    ("CONTROL", "прошёл 6 км", "training", None),
+    ("CONTROL", "съел омлет, люблю его", "meal", "meal"),
+    ("CONTROL", "сегодня 82 кг утром", "weight", None),
 ]
 
 # intent-7 — role routing must not regress (detect_intent)
