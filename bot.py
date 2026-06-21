@@ -3114,13 +3114,26 @@ def main() -> None:
     if not token:
         raise SystemExit("TELEGRAM_BOT_TOKEN is missing. Add it to .env.")
 
+    # Fail closed: the bot serves a single owner. Without a valid owner id it
+    # must not start — never default to serving everyone.
+    owner_id_raw = os.getenv("HEALTH_OS_OWNER_ID")
+    if not owner_id_raw or not owner_id_raw.strip().lstrip("-").isdigit():
+        raise SystemExit(
+            "HEALTH_OS_OWNER_ID is missing or not a valid integer. "
+            "Set it to the owner's Telegram numeric user id in .env "
+            "(the bot serves only that user)."
+        )
+    owner = filters.User(user_id=int(owner_id_raw.strip()))
+
     app = Application.builder().token(token).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("today", today))
-    app.add_handler(CommandHandler("health_review", health_review))
-    app.add_handler(MessageHandler(filters.Regex(r"^/health-review(?:@\w+)?(?:\s|$)"), health_review))
-    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(CommandHandler("start", start, filters=owner))
+    app.add_handler(CommandHandler("today", today, filters=owner))
+    app.add_handler(CommandHandler("health_review", health_review, filters=owner))
+    app.add_handler(
+        MessageHandler(filters.Regex(r"^/health-review(?:@\w+)?(?:\s|$)") & owner, health_review)
+    )
+    app.add_handler(MessageHandler(filters.PHOTO & owner, handle_photo))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & owner, handle_message))
 
     try:
         asyncio.get_event_loop()
