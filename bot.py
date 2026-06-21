@@ -901,6 +901,10 @@ def is_food_message(text: str) -> bool:
         return False
     if is_decision_or_planning_question(text):
         return False
+    if is_intention_or_opinion(text):
+        # V1: a mention of food in an intention/opinion/info-request is not a meal;
+        # fixes both the write (food_like_message path) and the role (detect_intent).
+        return False
     normalized = text.lower()
     food_pattern = (
         r"(?<!\w)("
@@ -2065,6 +2069,83 @@ def format_training_session_response(daily_log: dict, user_text: str) -> str:
     )
 
 
+def is_intention_or_opinion(text: str) -> bool:
+    """True for a pure intention / preference / info-request.
+    False when the message reports a completed meal, so a real food log is not
+    suppressed (e.g. «съел омлет, люблю его», «на обед был омлет»)."""
+    normalized = text.lower().replace("ё", "е")
+    eaten = re.search(
+        r"(?<!\w)(ел|ела|поел\w*|съел\w*|съед\w*|перекусил\w*|выпил\w*|"
+        r"позавтракал\w*|пообедал\w*|поужинал\w*)(?!\w)",
+        normalized,
+    ) or re.search(r"на\s+(завтрак|обед|ужин|перекус)", normalized)
+    intention_verb = re.search(
+        r"(?<!\w)(хочу|хочется|хотел\w*|планиру\w*)(?!\w)", normalized
+    )
+    if eaten and not intention_verb:
+        # A reported meal (not framed as a wish) is a fact, not just an opinion.
+        return False
+    return bool(
+        re.search(
+            r"(?<!\w)(хочу|хочется|хотел\w*|люблю|нравится|"
+            r"цел[ьи](?!\w)|планиру\w*|собира\w*|"
+            r"буду\s+есть|поем(?!\w)|поешь|съем(?!\w)|"
+            r"надо\s+бы|нужно\s+бы|"
+            r"какой|какая|какие|расскаж\w*|посоветуй\w*|объясни\w*)(?!\w)",
+            normalized,
+        )
+    )
+
+
+def is_bodyweight_report(text: str) -> bool:
+    """True only for an actual body-weight measurement (number + body context),
+    not a goal/complaint and not a lifting weight."""
+    normalized = text.lower().replace("ё", "е")
+    if not re.search(r"\d", normalized):
+        return False
+    if re.search(
+        r"(присед\w*|присел\w*|жим\w*|пожал\w*|выжал\w*|толкн\w*|рывок\w*|подтян\w*|"
+        r"тяг\w*|станов\w*|подход\w*|повтор\w*|[xх×]\s*\d|\d\s*раз)",
+        normalized,
+    ):
+        return False
+    if re.search(r"(?<!\w)(вес|весы|взвес\w*|weight)(?!\w)", normalized):
+        return True
+    if re.search(r"\d+(?:[.,]\d+)?\s*кг", normalized) and re.search(
+        r"(утро\w*|утром|натощак|проснул\w*|сегодня)", normalized
+    ):
+        return True
+    return False
+
+
+def is_cardio_log(text: str) -> bool:
+    """True for a reported cardio session (run/walk/bike/swim with distance or duration)."""
+    if is_question_message(text) or is_decision_or_planning_question(text):
+        return False
+    normalized = text.lower().replace("ё", "е")
+    cardio_metric = re.search(r"\d+(?:[.,]\d+)?\s*(км|km|мин|минут|minutes)", normalized)
+    # Unambiguous cardio verbs count on their own.
+    unambiguous_verb = re.search(
+        r"(?<!\w)(пробежал\w*|побегал\w*|пробежк\w*|проплыл\w*|наплавал\w*)(?!\w)",
+        normalized,
+    )
+    # Ambiguous movement verbs ("день прошёл", "прошёл собеседование") count only
+    # together with a distance/duration metric, otherwise they are everyday speech.
+    ambiguous_verb = re.search(
+        r"(?<!\w)(прошел\w*|прошла|прошагал\w*|проехал\w*|покатал\w*)(?!\w)",
+        normalized,
+    )
+    cardio_noun = re.search(
+        r"(?<!\w)(бег|велик\w*|велосипед\w*|эллипс\w*|элипс\w*|плавани\w*|гребл\w*)(?!\w)",
+        normalized,
+    )
+    return bool(
+        unambiguous_verb
+        or (ambiguous_verb and cardio_metric)
+        or (cardio_noun and cardio_metric)
+    )
+
+
 def classify_entry(text: str) -> str:
     normalized = text.lower()
     if is_training_query_message(text):
@@ -2073,15 +2154,27 @@ def classify_entry(text: str) -> str:
         return "note"
     if is_decision_or_planning_question(text):
         return "note"
-    interrogative = is_question_message(text)
-    if not interrogative and re.search(r"(?<!\w)(вес|weight)(?!\w)", normalized):
-        return "weight"
-    if not interrogative and re.search(r"(?<!\w)(сон|спал\w*|sleep)(?!\w)", normalized):
-        return "sleep"
-    if is_training_log_message(text):
-        return "training"
+    if is_intention_or_opinion(text):
+        # P1: intention / preference / info-request is not a logged fact.
+        return "note"
     if is_setback_message(text):
-        return "meal" if is_food_message(text) else "note"
+        # P3: during a setback do not silently log food as an ordinary meal;
+        # keep it a note so the write agrees with the behaviorist role.
+        return "note"
+    interrogative = is_question_message(text)
+    if not interrogative and is_bodyweight_report(text):
+        # P1/P2: only a real body-weight measurement (number + body context).
+        return "weight"
+    if (
+        not interrogative
+        and re.search(r"(?<!\w)(сон|спал\w*|sleep)(?!\w)", normalized)
+        and re.search(r"\d", normalized)
+    ):
+        # P1: a sleep fact needs hours; a complaint without a number is a note.
+        return "sleep"
+    if is_training_log_message(text) or is_cardio_log(text):
+        # P2: cardio verbs (пробежал / прошёл … км) count as a training log.
+        return "training"
     if is_food_message(text):
         return "meal"
     return "note"
@@ -2184,7 +2277,13 @@ def append_log_entry(text: str, username: str | None) -> tuple[str, dict]:
                 "logged_by": username,
             }
         )
-    else:
+    elif not (
+        is_question_message(clean_text)
+        or is_planning_or_advice_query(clean_text)
+        or is_decision_or_planning_question(clean_text)
+        or is_intention_or_opinion(clean_text)
+    ):
+        # P4: do not log pure questions / planning / intention as notes.
         daily_log["notes"].append({"time": now, "text": text, "logged_by": username})
 
     write_daily_log(daily_log)
