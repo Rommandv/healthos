@@ -2993,6 +2993,128 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     )
 
 
+# --- Shadow classification (LLM run in PARALLEL to regex; prod decision unchanged) ---
+
+SHADOW_DIR = DATA_DIR / "shadow"
+_shadow_tasks: set = set()
+
+SHADOW_CLASSIFY_TOOL = {
+    "name": "classify_message",
+    "description": "Классифицировать сообщение Health OS: роль (intent), писать ли факт и его тип.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "intent": {
+                "type": "string",
+                "enum": [
+                    "meal", "training", "sleep_recovery",
+                    "biomarkers_imaging", "behaviorist", "general",
+                ],
+            },
+            "loggable": {"type": "boolean"},
+            "log_type": {
+                "type": "string",
+                "enum": ["meal", "weight", "sleep", "training", "none"],
+            },
+            "confidence": {"type": "number"},
+        },
+        "required": ["intent", "loggable", "log_type", "confidence"],
+    },
+}
+
+SHADOW_CLASSIFY_INSTRUCTIONS = (
+    "Ты классификатор сообщений Health OS. Определи:\n"
+    "- intent: роль/тема сообщения.\n"
+    "- loggable: писать ли факт. true ТОЛЬКО для явного свершившегося действия "
+    "(съел/сделал/взвесился N). Намерение/мнение/вопрос/план → false.\n"
+    "- log_type: meal|weight|sleep|training|none.\n"
+    "- confidence: 0..1.\n"
+    "При сомнении loggable=false. Ответь строго через инструмент classify_message."
+)
+
+
+def shadow_classify(text: str) -> dict | None:
+    """LLM classification used ONLY in shadow mode. Never affects prod decisions.
+    Returns {intent, loggable, log_type, confidence} or None on any failure."""
+    if not os.getenv("ANTHROPIC_API_KEY"):
+        return None
+    try:
+        client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+        context = (
+            f"## directives\n{load_text_file(DIRECTIVES_FILE)}\n\n"
+            f"## profile\n{load_text_file(USER_PROFILE_FILE)}"
+        )
+        response = client.messages.create(
+            model=ANTHROPIC_MODEL,
+            max_tokens=300,
+            temperature=0,
+            system=SHADOW_CLASSIFY_INSTRUCTIONS,
+            tools=[SHADOW_CLASSIFY_TOOL],
+            tool_choice={"type": "tool", "name": "classify_message"},
+            messages=[{"role": "user", "content": f"{context}\n\nСообщение:\n{text}"}],
+        )
+        for block in response.content:
+            if getattr(block, "type", None) == "tool_use" and block.name == "classify_message":
+                data = dict(block.input)
+                return {
+                    "intent": data.get("intent"),
+                    "loggable": data.get("loggable"),
+                    "log_type": data.get("log_type"),
+                    "confidence": data.get("confidence"),
+                }
+        return None
+    except Exception:
+        return None
+
+
+def _regex_log_type(entry_type: str) -> str:
+    if entry_type in ("meal", "meal_update"):
+        return "meal"
+    if entry_type == "weight":
+        return "weight"
+    if entry_type == "sleep":
+        return "sleep"
+    if entry_type in ("training", "training_update", "training_set", "training_exercise_switch"):
+        return "training"
+    return "none"
+
+
+def record_shadow_divergence(
+    text: str, regex_entry_type: str, regex_intent: str, llm: dict
+) -> None:
+    """Append one shadow comparison record to a gitignored jsonl. Best-effort."""
+    try:
+        SHADOW_DIR.mkdir(parents=True, exist_ok=True)
+        agree = bool(
+            llm.get("intent") == regex_intent
+            and llm.get("log_type") == _regex_log_type(regex_entry_type)
+        )
+        record = {
+            "ts": datetime.now(TIMEZONE).isoformat(),
+            "message": text,
+            "regex": {"entry_type": regex_entry_type, "intent": regex_intent},
+            "llm": llm,
+            "agree": agree,
+        }
+        path = SHADOW_DIR / f"{today_str()}.jsonl"
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+
+async def run_shadow_comparison(
+    text: str, regex_entry_type: str, regex_intent: str
+) -> None:
+    """Background shadow eval. Fully isolated: never affects the user response."""
+    try:
+        llm = await asyncio.to_thread(shadow_classify, text)
+        if llm is not None:
+            record_shadow_divergence(text, regex_entry_type, regex_intent, llm)
+    except Exception:
+        pass
+
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message or not update.message.text:
         return
@@ -3028,6 +3150,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
         write_daily_log(daily_log)
         entry_type = "meal"
+
+    # Shadow: LLM classification runs in parallel; the prod decision above stays
+    # with the regex path. Fire-and-forget, fully isolated, never blocks the reply.
+    if os.getenv("HEALTH_OS_SHADOW") == "1":
+        shadow_task = asyncio.create_task(
+            run_shadow_comparison(text, entry_type, detected_intent)
+        )
+        _shadow_tasks.add(shadow_task)
+        shadow_task.add_done_callback(_shadow_tasks.discard)
 
     if detected_intent == "behaviorist":
         if not os.getenv("ANTHROPIC_API_KEY"):
