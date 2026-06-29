@@ -426,9 +426,11 @@ def replacement_pattern_unknown_message(user_text: str) -> str | None:
     )
 
 
-def load_health_context(user_text: str | None = None, daily_log: dict | None = None) -> str:
+def load_health_context(
+    user_text: str | None = None, daily_log: dict | None = None, intent: str | None = None
+) -> str:
     parts: list[str] = []
-    intent = detect_intent(user_text or "")
+    intent = intent or detect_intent(user_text or "")
 
     parts.append(f"## Runtime Coach boundaries\n{RUNTIME_CONTEXT_INSTRUCTIONS}")
 
@@ -2624,9 +2626,11 @@ def format_meal_response(
     )
 
 
-def call_anthropic(user_text: str, entry_type: str, daily_log: dict) -> str:
+def call_anthropic(
+    user_text: str, entry_type: str, daily_log: dict, context_intent: str | None = None
+) -> str:
     client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
-    health_context = load_health_context(user_text, daily_log)
+    health_context = load_health_context(user_text, daily_log, intent=context_intent)
     entry_note = ""
     if entry_type == "meal_update":
         entry_note = (
@@ -2969,6 +2973,10 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         )
         return
 
+    # Photo path stays vision-LLM with its own richer meal write (ranges /
+    # confidence / source) — intentionally not routed through write_classified_fact,
+    # which would drop those vision-only fields. No regex understanding here either.
+    # Cleanup must keep this path's deps (format_meal_response, MEAL_RANGE_FIELDS).
     daily_log = read_daily_log()
     now = datetime.now(TIMEZONE).strftime("%H:%M")
     meal_entry = {
@@ -3017,6 +3025,41 @@ SHADOW_CLASSIFY_TOOL = {
                 "enum": ["meal", "weight", "sleep", "training", "none"],
             },
             "confidence": {"type": "number"},
+            "extracted_fields": {
+                "type": "object",
+                "description": "Заполнять только при loggable=true; только явно указанные значения.",
+                "properties": {
+                    "meal": {
+                        "type": "object",
+                        "properties": {
+                            "description": {"type": "string"},
+                            "calories": {"type": "number"},
+                            "protein_g": {"type": "number"},
+                            "fat_g": {"type": "number"},
+                            "carbs_g": {"type": "number"},
+                        },
+                    },
+                    "weight": {
+                        "type": "object",
+                        "properties": {"kg": {"type": "number"}},
+                    },
+                    "sleep": {
+                        "type": "object",
+                        "properties": {
+                            "hours": {"type": "number"},
+                            "quality": {"type": "string"},
+                        },
+                    },
+                    "training": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string"},
+                            "duration_min": {"type": "number"},
+                            "exercises": {"type": "array", "items": {"type": "object"}},
+                        },
+                    },
+                },
+            },
         },
         "required": ["intent", "loggable", "log_type", "confidence"],
     },
@@ -3048,13 +3091,18 @@ SHADOW_CLASSIFY_INSTRUCTIONS = (
     "— побеждает действие (это факт): «съел омлет, люблю его» → loggable=true, meal.\n\n"
     "log_type — meal|weight|sleep|training|none. Консистентность: если "
     "loggable=false, то log_type ВСЕГДА none.\n\n"
+    "extracted_fields — при loggable=true извлеки поля под log_type: meal "
+    "(description + calories/protein_g/fat_g/carbs_g, если названы), weight (kg), "
+    "sleep (hours, quality), training (name, duration_min, exercises). Только явно "
+    "указанные значения, ничего не выдумывай.\n\n"
     "confidence — 0..1. При любом сомнении loggable=false."
 )
 
 
 def shadow_classify(text: str) -> dict | None:
-    """LLM classification used ONLY in shadow mode. Never affects prod decisions.
-    Returns {intent, loggable, log_type, confidence} or None on any failure."""
+    """LLM classification — the single source of truth for the write/role decision.
+    Returns {intent, loggable, log_type, confidence, extracted_fields} or None on
+    any failure (no key / timeout / invalid). Caller fails safe on None."""
     if not os.getenv("ANTHROPIC_API_KEY"):
         return None
     try:
@@ -3080,6 +3128,7 @@ def shadow_classify(text: str) -> dict | None:
                     "loggable": data.get("loggable"),
                     "log_type": data.get("log_type"),
                     "confidence": data.get("confidence"),
+                    "extracted_fields": data.get("extracted_fields") or {},
                 }
         return None
     except Exception:
@@ -3134,6 +3183,124 @@ async def run_shadow_comparison(
         pass
 
 
+def write_classified_fact(
+    daily_log: dict, log_type: str, fields: dict, text: str, username: str | None
+) -> bool:
+    """Code owns the write. The LLM only decides + extracts; this validates ranges
+    and stores. Returns True if a fact was written."""
+    now = datetime.now(TIMEZONE).strftime("%H:%M")
+
+    def _nonneg(value):
+        return int(value) if isinstance(value, (int, float)) and value >= 0 else None
+
+    if log_type == "meal":
+        meal = fields.get("meal") or {}
+        daily_log["meals"].append({
+            "time": now,
+            "description": meal.get("description") or text,
+            "calories": _nonneg(meal.get("calories")),
+            "protein_g": _nonneg(meal.get("protein_g")),
+            "fat_g": _nonneg(meal.get("fat_g")),
+            "carbs_g": _nonneg(meal.get("carbs_g")),
+            "notes": None,
+            "logged_by": username,
+        })
+        return True
+    if log_type == "weight":
+        kg = (fields.get("weight") or {}).get("kg")
+        if isinstance(kg, (int, float)) and 30 <= kg <= 300:
+            daily_log["weight_morning"] = kg
+            return True
+        return False
+    if log_type == "sleep":
+        sleep = fields.get("sleep") or {}
+        hours = sleep.get("hours")
+        if isinstance(hours, (int, float)) and 0 <= hours <= 16:
+            daily_log["sleep"].update({
+                "hours": hours,
+                "quality": sleep.get("quality"),
+                "raw": text,
+                "logged_at": now,
+            })
+            return True
+        return False
+    if log_type == "training":
+        training = fields.get("training") or {}
+        daily_log["training"].append({
+            "type": training.get("type") or "strength",
+            "name": training.get("name"),
+            "exercises": training.get("exercises") or [],
+            "duration_min": training.get("duration_min"),
+            "raw": text,
+            "time": now,
+            "logged_by": username,
+        })
+        return True
+    return False
+
+
+def format_logged_training_response(daily_log: dict) -> str:
+    """Deterministic training confirmation from the LLM-extracted fields.
+    Tolerant of the LLM exercise shape (sets as int / list / missing)."""
+    entry = (daily_log.get("training") or [{}])[-1]
+    lines = [f"Записал тренировку: {entry.get('name') or 'тренировка'}"]
+    summary = []
+    for ex in entry.get("exercises") or []:
+        if isinstance(ex, dict):
+            name = ex.get("name") or "упражнение"
+            bits = []
+            weight = ex.get("weight") if ex.get("weight") is not None else ex.get("weight_kg")
+            if weight is not None:
+                bits.append(f"{weight} кг")
+            sets, reps = ex.get("sets"), ex.get("reps")
+            if isinstance(sets, (int, float)) and reps is not None:
+                bits.append(f"{int(sets)}x{reps}")
+            elif isinstance(sets, list):
+                bits.append(f"{len(sets)} подх.")
+            elif reps is not None:
+                bits.append(f"{reps} повт.")
+            summary.append(f"- {name}" + (f": {', '.join(map(str, bits))}" if bits else ""))
+        elif isinstance(ex, str):
+            summary.append(f"- {ex}")
+    if summary:
+        lines.append("\n".join(summary))
+    if entry.get("duration_min"):
+        lines.append(f"Длительность: {entry['duration_min']} мин")
+    lines.append("Следующий шаг: фиксируй вес и повторы — так видно прогрессию.")
+    return "\n\n".join(lines)
+
+
+def format_logged_meal_response(daily_log: dict) -> str:
+    """Deterministic meal confirmation from STORED fields (user data = source of
+    truth) — no text re-estimation. Separate from format_meal_response, which
+    handle_photo still uses with its vision ranges."""
+    meals = daily_log.get("meals") or []
+    latest = meals[-1] if meals else {}
+    description = meal_description(daily_log, latest.get("description") or "приём пищи")
+
+    def _int(value):
+        return int(value) if isinstance(value, (int, float)) else None
+
+    estimate = {field: _int(latest.get(field)) for field in
+                ("calories", "protein_g", "fat_g", "carbs_g")}
+
+    targets = nutrition_targets()
+    consumed = {field: 0 for field in ("calories", "protein_g", "fat_g", "carbs_g")}
+    for meal in meals:
+        for field in consumed:
+            value = meal.get(field)
+            if isinstance(value, (int, float)):
+                consumed[field] += int(value)
+    remaining = {field: max(targets.get(field, 0) - consumed[field], 0) for field in consumed}
+
+    return "\n\n".join([
+        f"Записал: {description}",
+        f"Оценка:\n{format_nutrition(estimate)}",
+        f"Остаток дня:\n{format_nutrition(remaining)}",
+        "Следующий шаг: следующий приём собери вокруг белка.",
+    ])
+
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message or not update.message.text:
         return
@@ -3143,103 +3310,45 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     username = update.effective_user.username if update.effective_user else None
-    entry_type, daily_log = append_log_entry(text, username)
-    clean_text = re.sub(r"^\s*\d+[.)]\s*", "", text).strip() or text
-    detected_intent = detect_intent(clean_text)
-    food_like_message = (
-        (detected_intent == "meal" or is_food_message(clean_text))
-        and detected_intent != "behaviorist"
-        and not is_planning_or_advice_query(clean_text)
-        and not is_question_message(clean_text)
-        and not is_decision_or_planning_question(clean_text)
-    )
-    if food_like_message and entry_type not in ("meal", "meal_update"):
-        now = datetime.now(TIMEZONE).strftime("%H:%M")
-        daily_log["meals"].append(
-            {
-                "time": now,
-                "description": text,
-                "calories": extract_calories(clean_text),
-                "protein_g": extract_protein(clean_text),
-                "fat_g": extract_fat(clean_text),
-                "carbs_g": extract_carbs(clean_text),
-                "notes": None,
-                "logged_by": username,
-            }
-        )
-        write_daily_log(daily_log)
-        entry_type = "meal"
 
-    # Shadow: LLM classification runs in parallel; the prod decision above stays
-    # with the regex path. Fire-and-forget, fully isolated, never blocks the reply.
-    if os.getenv("HEALTH_OS_SHADOW") == "1":
-        shadow_task = asyncio.create_task(
-            run_shadow_comparison(text, entry_type, detected_intent)
-        )
-        _shadow_tasks.add(shadow_task)
-        shadow_task.add_done_callback(_shadow_tasks.discard)
-
-    if detected_intent == "behaviorist":
-        if not os.getenv("ANTHROPIC_API_KEY"):
-            await update.message.reply_text(
-                "Без паники: всё поправимо.\n\nОдин шаг: стакан воды, следующий белковый приём по плану."
-            )
-            return
+    # LLM is the single source of truth for intent + the write decision.
+    result = None
+    if os.getenv("ANTHROPIC_API_KEY"):
         try:
-            answer = await asyncio.to_thread(call_anthropic, text, "behaviorist", daily_log)
+            result = await asyncio.to_thread(shadow_classify, text)
         except Exception:
-            answer = "Без паники: всё поправимо.\n\nОдин шаг: стакан воды, следующий белковый приём по плану."
-        await update.message.reply_text(answer)
+            result = None
+    if result is None:
+        # Fail safe: no regex guessing, write nothing.
+        await update.message.reply_text("Не смог обработать сообщение. Повтори, пожалуйста.")
         return
 
-    if entry_type == "training_set":
-        await update.message.reply_text(format_training_set_response(daily_log))
+    intent = result.get("intent") or "general"
+    loggable = bool(result.get("loggable"))
+    log_type = result.get("log_type") or "none"
+    fields = result.get("extracted_fields") or {}
+
+    daily_log = read_daily_log()
+    wrote_fact = False
+    if loggable and log_type != "none":
+        wrote_fact = write_classified_fact(daily_log, log_type, fields, text, username)
+        if wrote_fact:
+            write_daily_log(daily_log)
+
+    # meal / training facts -> deterministic formatters from the stored fields.
+    if wrote_fact and log_type == "meal":
+        await update.message.reply_text(format_logged_meal_response(daily_log))
+        return
+    if wrote_fact and log_type == "training":
+        await update.message.reply_text(format_logged_training_response(daily_log))
         return
 
-    if entry_type == "training_exercise_switch":
-        await update.message.reply_text(format_training_exercise_switch_response(daily_log))
-        return
-
-    if entry_type == "training_set_needs_exercise":
-        await update.message.reply_text(format_training_set_needs_exercise_response())
-        return
-
-    if entry_type in ("training", "training_update"):
-        await update.message.reply_text(format_training_log_response(entry_type, daily_log))
-        return
-
-    if is_training_session_query(text):
-        answer = format_training_session_response(daily_log, text)
-        write_daily_log(daily_log)
-        await update.message.reply_text(answer)
-        return
-
-    unknown_replacement_message = replacement_pattern_unknown_message(text)
-    if unknown_replacement_message:
-        await update.message.reply_text(unknown_replacement_message)
-        return
-
-    if not os.getenv("ANTHROPIC_API_KEY"):
-        if food_like_message or entry_type in ("meal", "meal_update"):
-            await update.message.reply_text(
-                format_meal_response("", entry_type, daily_log, text)
-            )
-            return
-        await update.message.reply_text(model_error_message(entry_type))
-        return
-
+    # everything else (general / behaviorist / sleep / biomarkers / logged weight/sleep)
+    # -> LLM answer with intent-specific context.
     try:
-        answer = await asyncio.to_thread(call_anthropic, text, entry_type, daily_log)
+        answer = await asyncio.to_thread(call_anthropic, text, intent, daily_log, intent)
     except Exception:
-        if food_like_message or entry_type in ("meal", "meal_update"):
-            answer = format_meal_response("", entry_type, daily_log, text)
-            await update.message.reply_text(answer)
-            return
-        answer = model_error_message(entry_type)
-
-    if food_like_message or entry_type in ("meal", "meal_update"):
-        answer = format_meal_response(answer, entry_type, daily_log, text)
-
+        answer = "Не смог сформулировать ответ. Повтори, пожалуйста."
     await update.message.reply_text(answer)
 
 
