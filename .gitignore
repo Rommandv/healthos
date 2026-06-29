@@ -10,6 +10,4 @@ __pycache__/
 data/tactical/logs/*.yaml
 !data/tactical/logs/.gitkeep
 
-data/shadow/
-
 knowledge/raw/**

@@ -3001,10 +3001,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     )
 
 
-# --- Shadow classification (LLM run in PARALLEL to regex; prod decision unchanged) ---
-
-SHADOW_DIR = DATA_DIR / "shadow"
-_shadow_tasks: set = set()
+# --- LLM classification (prod: single source of truth for intent + write) ---
 
 SHADOW_CLASSIFY_TOOL = {
     "name": "classify_message",
@@ -3133,54 +3130,6 @@ def shadow_classify(text: str) -> dict | None:
         return None
     except Exception:
         return None
-
-
-def _regex_log_type(entry_type: str) -> str:
-    if entry_type in ("meal", "meal_update"):
-        return "meal"
-    if entry_type == "weight":
-        return "weight"
-    if entry_type == "sleep":
-        return "sleep"
-    if entry_type in ("training", "training_update", "training_set", "training_exercise_switch"):
-        return "training"
-    return "none"
-
-
-def record_shadow_divergence(
-    text: str, regex_entry_type: str, regex_intent: str, llm: dict
-) -> None:
-    """Append one shadow comparison record to a gitignored jsonl. Best-effort."""
-    try:
-        SHADOW_DIR.mkdir(parents=True, exist_ok=True)
-        agree = bool(
-            llm.get("intent") == regex_intent
-            and llm.get("log_type") == _regex_log_type(regex_entry_type)
-        )
-        record = {
-            "ts": datetime.now(TIMEZONE).isoformat(),
-            "message": text,
-            "regex": {"entry_type": regex_entry_type, "intent": regex_intent},
-            "llm": llm,
-            "agree": agree,
-        }
-        path = SHADOW_DIR / f"{today_str()}.jsonl"
-        with path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
-    except Exception:
-        pass
-
-
-async def run_shadow_comparison(
-    text: str, regex_entry_type: str, regex_intent: str
-) -> None:
-    """Background shadow eval. Fully isolated: never affects the user response."""
-    try:
-        llm = await asyncio.to_thread(shadow_classify, text)
-        if llm is not None:
-            record_shadow_divergence(text, regex_entry_type, regex_intent, llm)
-    except Exception:
-        pass
 
 
 def write_classified_fact(
