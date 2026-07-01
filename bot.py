@@ -430,7 +430,7 @@ def load_health_context(
     user_text: str | None = None, daily_log: dict | None = None, intent: str | None = None
 ) -> str:
     parts: list[str] = []
-    intent = intent or detect_intent(user_text or "")
+    intent = intent or "general"
 
     parts.append(f"## Runtime Coach boundaries\n{RUNTIME_CONTEXT_INSTRUCTIONS}")
 
@@ -3304,18 +3304,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 def main() -> None:
     if "--check" in sys.argv:
         check_text = " ".join(arg for arg in sys.argv[1:] if arg != "--check")
-        context = load_health_context(check_text)
-        detected_intent = detect_intent(check_text)
-        selected_topics = select_knowledge_topics(check_text)
-        selected_files = [
-            path.relative_to(BASE_DIR).as_posix()
-            for path in knowledge_files_for_intent(detected_intent, check_text)
-        ]
+        result = shadow_classify(check_text)
+        intent = (result or {}).get("intent") or "general"
+        context = load_health_context(check_text, intent=intent)
         print(f"bot.py import OK; context bytes: {len(context)}")
-        print(f"detected intent: {detected_intent}")
-        print(f"context files: {context_file_labels(check_text)}")
-        print(f"selected topics: {selected_topics}")
-        print(f"selected knowledge files: {selected_files}")
+        print(f"LLM classification: {result}")
+        print(f"context intent: {intent}")
         return
 
     token = os.getenv("TELEGRAM_BOT_TOKEN")
