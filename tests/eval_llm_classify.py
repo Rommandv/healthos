@@ -1,26 +1,22 @@
-"""Eval gate for LLM-primary classification (path b).
+"""Eval for the LLM-primary classifier (prod path).
 
-Runs the 34 harness cases (from test_classify.py) through the REAL LLM
-classifier `bot.shadow_classify()`, N times each (temp 0; N runs measure
-flakiness), and scores TWO ways:
+Runs the probe set through the REAL classifier `bot.shadow_classify()`, N times
+each (temp 0; N runs surface flakiness), and scores against the expectations
+mapped to the LLM output shape {intent, loggable, log_type}.
 
-  (a) LLM-alone  — how well the model understands by itself. Higher = less we
-      lean on regex = more faithful to Vlad (understanding, not pattern-match).
-  (b) LLM+guard  — production-faithful: the thin deterministic safety guard from
-      design 3.5 (is_setback_message / is_intention_or_opinion / question /
-      planning) applied on top. The guard may only NARROW (force not-loggable,
-      or behaviorist for a setback), never widen. This is the SWITCH number.
+Prod has no regex guard anymore (pure-LLM switch), so this measures the LLM
+alone — which IS the production behavior.
 
-Expectation mapping (LLM shape {intent, loggable, log_type}):
-- don't-write (fact "none"): loggable=false, log_type=none.
-- write (meal/weight/sleep/training): loggable=true + that log_type.
+Mapping:
+- don't-write cases (fact "none"): loggable=false, log_type=none.
+- write cases (meal/weight/sleep/training): loggable=true + that log_type.
 - intent checked only where meaningful: C (behaviorist), MIXED (meal), intent-7.
 - P4 (questions / pain note): not a trackable fact -> loggable=false.
 
-SAFETY set (gate 100% on LLM+guard): A ("no-write") + C (no-write & behaviorist).
-Non-safety gate: >= 0.95 on LLM+guard.
+SAFETY set (must be 100%): A ("no-write") + C (no-write & behaviorist).
+Non-safety set: >= 0.95.
 
-Needs ANTHROPIC_API_KEY. Cost: 34 x N Haiku calls. Does not modify bot.py.
+Needs ANTHROPIC_API_KEY. Cost: (cases x N) Haiku calls. Does not modify bot.py.
 Run: python3 tests/eval_llm_classify.py
 """
 import os
@@ -30,55 +26,80 @@ from pathlib import Path
 
 HEALTH_OS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HEALTH_OS))
-sys.path.insert(0, str(HEALTH_OS / "tests"))
 
 import bot  # noqa: E402
-from test_classify import EFFECTIVE_CASES, INTENT_CASES, P4_CASES  # noqa: E402
 
 N = 5
 WORKERS = 6
 SAFETY_SECTIONS = {"A no-write", "C role<->write"}
+
+# (section, message, expected_fact, expected_role | None)
+EFFECTIVE_CASES = [
+    # A — must not write a fact
+    ("A no-write", "хочу скинуть вес к лету", "none", None),
+    ("A no-write", "вес встал колом, не падает", "none", None),
+    ("A no-write", "сон у меня плохой последнее время", "none", None),
+    ("A no-write", "хочу наладить сон", "none", None),
+    ("A no-write", "люблю омлет по утрам", "none", "general"),
+    ("A no-write", "какой омлет приготовить?", "none", "general"),
+    ("A no-write", "расскажи про белок", "none", "general"),
+    # B — must write the right fact
+    ("B write-fact", "встал на весы — 82", "weight", None),
+    ("B write-fact", "сегодня 82 кг утром", "weight", None),
+    ("B write-fact", "пробежал 5 км утром", "training", None),
+    # C — write must agree with role (setback: no meal, behaviorist)
+    ("C role<->write", "сорвался, съел омлет вечером", "none", "behaviorist"),
+    # MIXED — opinion + a real meal report still logs the meal
+    ("MIXED", "съел омлет, люблю его", "meal", "meal"),
+    ("MIXED", "на обед был омлет", "meal", "meal"),
+    # ADVERSARIAL — false positives a probe-only set missed
+    ("ADVERSARIAL", "день прошёл нормально", "none", None),
+    ("ADVERSARIAL", "прошёл собеседование сегодня", "none", None),
+    ("ADVERSARIAL", "прошёл мимо зала, не зашёл", "none", None),
+    ("ADVERSARIAL", "как прошёл день", "none", None),
+    ("ADVERSARIAL", "пожал 80 кг утром", "training", None),
+    ("ADVERSARIAL", "сейчас поем омлет", "none", "general"),
+    ("ADVERSARIAL", "буду есть омлет", "none", "general"),
+    # CONTROL — must keep working
+    ("CONTROL", "пробежал 5 км", "training", None),
+    ("CONTROL", "прошёл 6 км", "training", None),
+    ("CONTROL", "съел омлет, люблю его", "meal", "meal"),
+    ("CONTROL", "сегодня 82 кг утром", "weight", None),
+]
+
+INTENT_CASES = [
+    ("сорвался вечером, сожрал пол-холодильника", "behaviorist"),
+    ("думаю съесть побольше белка, стоит ли?", "general"),
+    ("утром 3 яйца, тост и авокадо", "meal"),
+    ("присед 100 кг 5х5, как прогрессия?", "training"),
+    ("спал 5 часов, разбитый", "sleep_recovery"),
+    ("сдал анализы: ApoB 80, LDL 3.1", "biomarkers_imaging"),
+    ("стоит ли сейчас уходить в дефицит или держать поддержку?", "general"),
+]
+
+P4_CASES = [
+    "стоит ли уходить в дефицит или держать поддержку?",
+    "как лучше восстановиться после недосыпа?",
+    "болит плечо",
+]
 
 
 def expectations():
     out = []
     for sec, msg, fact, role in EFFECTIVE_CASES:
         out.append({
-            "section": sec,
-            "msg": msg,
-            "loggable": fact != "none",
-            "log_type": fact,
+            "section": sec, "msg": msg,
+            "loggable": fact != "none", "log_type": fact,
             "intent": role if sec in ("C role<->write", "MIXED") else None,
             "safety": sec in SAFETY_SECTIONS,
         })
     for msg, role in INTENT_CASES:
         out.append({"section": "intent-7", "msg": msg, "loggable": None,
                     "log_type": None, "intent": role, "safety": False})
-    for msg, _notes in P4_CASES:
+    for msg in P4_CASES:
         out.append({"section": "P4", "msg": msg, "loggable": False,
                     "log_type": "none", "intent": None, "safety": False})
     return out
-
-
-def apply_guard(text, out):
-    """Production safety guard (design 3.5): deterministic, only narrows.
-    Mirrors what the switch will do on top of the LLM. Reuses bot predicates."""
-    if out is None:
-        return None
-    g = dict(out)
-    if bot.is_setback_message(text):
-        g["intent"] = "behaviorist"
-        g["loggable"] = False
-        g["log_type"] = "none"
-    elif (
-        bot.is_intention_or_opinion(text)
-        or bot.is_question_message(text)
-        or bot.is_planning_or_advice_query(text)
-        or bot.is_decision_or_planning_question(text)
-    ):
-        g["loggable"] = False
-        g["log_type"] = "none"
-    return g
 
 
 def passes(out, exp):
@@ -93,13 +114,6 @@ def passes(out, exp):
     if exp["intent"] is not None and out.get("intent") != exp["intent"]:
         return False
     return True
-
-
-def rate(rows, key, safety):
-    sel = [r for r in rows if r["exp"]["safety"] == safety]
-    ok = sum(r[key] for r in sel)
-    total = len(sel) * N
-    return ok, total, (ok / total if total else 1.0)
 
 
 def main() -> int:
@@ -122,72 +136,46 @@ def main() -> int:
     rows = []
     for i, exp in enumerate(cases):
         outs = raw[i]
-        alone = [passes(o, exp) for o in outs]
-        guard = [passes(apply_guard(exp["msg"], o), exp) for o in outs]
+        oks = [passes(o, exp) for o in outs]
         rows.append({
-            "exp": exp,
-            "alone_ok": sum(alone),
-            "guard_ok": sum(guard),
-            "alone_bad": next((o for o, ok in zip(outs, alone) if not ok), None),
-            "guard_bad": next(
-                (apply_guard(exp["msg"], o) for o, ok in zip(outs, guard) if not ok),
-                None,
-            ),
+            "exp": exp, "ok": sum(oks),
+            "bad": next((o for o, k in zip(outs, oks) if not k), None),
         })
 
     width = min(50, max(len(r["exp"]["msg"]) for r in rows))
-    print(f"{'SECTION':<14} | {'MESSAGE':<{width}} | alone | +guard")
-    print("-" * (14 + width + 18))
+    print(f"{'SECTION':<14} | {'MESSAGE':<{width}} | OK/{N}")
+    print("-" * (14 + width + 8))
     for r in rows:
         m = r["exp"]["msg"]
         m = m if len(m) <= width else m[: width - 1] + "…"
-        print(f"{r['exp']['section']:<14} | {m:<{width}} | "
-              f"{r['alone_ok']}/{N}   | {r['guard_ok']}/{N}")
+        mark = "PASS" if r["ok"] == N else ("FLAKY" if r["ok"] else "FAIL")
+        print(f"{r['exp']['section']:<14} | {m:<{width}} | {r['ok']}/{N} {mark}")
 
-    print("\n=== GATE-RELEVANT FAILURES (LLM+guard) ===")
-    gate_fail = False
-    for r in rows:
-        if r["guard_ok"] < N:
-            gate_fail = True
-            e = r["exp"]
-            tag = "SAFETY-FAIL" if e["safety"] else "FAIL"
-            print(f"[{tag}] {e['section']} | {e['msg']}")
-            print(f"    expected loggable={e['loggable']} log_type={e['log_type']} "
-                  f"intent={e['intent']}  ({r['guard_ok']}/{N})")
-            print(f"    sample (post-guard): {r['guard_bad']}")
-    if not gate_fail:
+    print("\n=== FAILURES ===")
+    fails = [r for r in rows if r["ok"] < N]
+    for r in fails:
+        e = r["exp"]
+        tag = "SAFETY-FAIL" if e["safety"] else "FAIL"
+        print(f"[{tag}] {e['section']} | {e['msg']}  ({r['ok']}/{N})")
+        print(f"    expected loggable={e['loggable']} log_type={e['log_type']} "
+              f"intent={e['intent']}  sample: {r['bad']}")
+    if not fails:
         print("(none)")
 
-    print("\n=== LLM-ALONE GAPS (model understanding, informational) ===")
-    any_gap = False
-    for r in rows:
-        if r["alone_ok"] < N:
-            any_gap = True
-            e = r["exp"]
-            print(f"[{e['section']}] {e['msg']}  ({r['alone_ok']}/{N})  "
-                  f"sample: {r['alone_bad']}")
-    if not any_gap:
-        print("(none — model passes standalone)")
+    def rate(safety):
+        sel = [r for r in rows if r["exp"]["safety"] == safety]
+        ok = sum(r["ok"] for r in sel)
+        total = len(sel) * N
+        return ok, total, (ok / total if total else 1.0)
 
-    a_s_ok, a_s_tot, a_s = rate(rows, "alone_ok", True)
-    a_o_ok, a_o_tot, a_o = rate(rows, "alone_ok", False)
-    g_s_ok, g_s_tot, g_s = rate(rows, "guard_ok", True)
-    g_o_ok, g_o_tot, g_o = rate(rows, "guard_ok", False)
-
-    print("\n=== SUMMARY ===")
-    print(f"{'':22} {'safety':>16} {'non-safety':>16}")
-    print(f"{'LLM-alone':22} {f'{a_s_ok}/{a_s_tot} ({a_s:.3f})':>16} "
-          f"{f'{a_o_ok}/{a_o_tot} ({a_o:.3f})':>16}")
-    print(f"{'LLM+guard (switch)':22} {f'{g_s_ok}/{g_s_tot} ({g_s:.3f})':>16} "
-          f"{f'{g_o_ok}/{g_o_tot} ({g_o:.3f})':>16}")
-
-    gate_safety = g_s == 1.0
-    gate_other = g_o >= 0.95
-    print(f"\nSWITCH GATE (LLM+guard): safety {'PASS' if gate_safety else 'FAIL'} "
-          f"(target 1.000) | non-safety {'PASS' if gate_other else 'FAIL'} (target >= 0.950)")
-    print(f"LLM-alone (Vlad fidelity, informational): "
-          f"safety {a_s:.3f}, non-safety {a_o:.3f}")
-    return 0 if (gate_safety and gate_other) else 1
+    s_ok, s_tot, s = rate(True)
+    o_ok, o_tot, o = rate(False)
+    print("\n=== SUMMARY (LLM-alone = prod behavior) ===")
+    print(f"safety:     {s_ok}/{s_tot} ({s:.3f})  target 1.000")
+    print(f"non-safety: {o_ok}/{o_tot} ({o:.3f})  target >= 0.950")
+    gate = s == 1.0 and o >= 0.95
+    print(f"\nGATE: {'PASS' if gate else 'FAIL'}")
+    return 0 if gate else 1
 
 
 if __name__ == "__main__":
