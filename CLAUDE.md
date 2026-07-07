@@ -181,36 +181,55 @@ health/
 ```yaml
 metadata:
   generated_at: YYYY-MM-DD
-  valid_until: YYYY-MM-DD
+  valid_until: null
+  status: personalized_initial
 
 active_modes:
-  primary: body_composition  # или: maintenance, performance, recovery
-  weights:
-    body_composition: 4      # 1-5 приоритет
-    cognitive_performance: 3
-    longevity: 2
-    athletic_performance: 1
+  primary: cognitive_performance   # или: body_composition, longevity, athletic_performance
+  weights:                         # 1-5 приоритет
+    cognitive_performance: 4
+    longevity: 4
+    athletic_performance: 3
+    body_composition: 3
+
+epistemic_rules:
+  no_data_policy: "unknown"        # неизмеренную метрику не оценивать «на глаз»
+  note: "Если метрика не измерена — пометить как «данных нет», не угадывать."
 
 constraints:
   nutrition:
-    saturated_fat_limit_g: null     # Заполняется после анализов (ApoB)
+    saturated_fat_limit_g: null     # заполняется после анализов (ApoB)
     omega3_minimum_g: null
     added_sugar_limit_g: null
+    fiber_minimum_g: 25
+    protein_rule: "1.6-2.2 g/kg/day; на дефиците ближе к верхней границе"
 
   training:
-    min_zone2_minutes_week: 90      # 3x30 мин — минимум
-    min_strength_sessions_week: 2
-    banned_exercises: []             # Травмы, ограничения
-    temporary_avoid: []              # Временные ограничения
+    min_zone2_minutes_week: 150
+    min_strength_sessions_week: 3
+    max_vo2max_sessions_week: 1
+    banned_exercises: []            # травмы, ограничения
+    temporary_avoid: []             # временные ограничения
+    recovery_rule: "Если сон < 6 ч — прогулка/Zone 1 или отдых вместо тренировки."
 
   sleep:
-    target_hours_min: 7
-    bedtime_variance_max_min: 30    # ±30 мин (регулярность > длительность)
-    caffeine_cutoff_hours: 10       # До сна
+    target_hours_min: 8
+    target_hours_max: 8
+    target_bed_time: "23:00"
+    target_wake_time: "07:00"
+    bedtime_variance_max_min: 30    # ±30 мин (регулярность > длительности)
+    caffeine_delay_after_wake_min: 90
+    caffeine_cutoff_hours_before_sleep: 10
+
+  recovery:
+    nsdr_sessions_week_min: 3
 
 monitoring:
-  daily: [sleep_hours, weight_morning, caffeine_adherence]
-  weekly: [weight_trend, training_compliance, zone2_minutes]
+  daily: [sleep_hours, weight_morning, meals, protein_g, training_done, caffeine_adherence]
+  weekly: [weight_trend, training_compliance, zone2_minutes, strength_sessions, nsdr_sessions]
+
+pending_measurements: [ApoB, Lp(a), HbA1c, fasting_insulin, HDL, triglycerides,
+                       VO2max, HRV_baseline, resting_heart_rate, ALMI, grip_strength]
 ```
 
 **Если анализов нет** — nutrition constraints остаются `null`. Coach работает только с калориями и макросами.

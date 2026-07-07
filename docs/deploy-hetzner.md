@@ -45,6 +45,10 @@ Use this shape, replacing placeholders with real values:
 TELEGRAM_BOT_TOKEN=your_telegram_bot_token_here
 ANTHROPIC_API_KEY=your_anthropic_api_key_here
 
+# Required: your numeric Telegram user id (from @userinfobot).
+# The bot serves ONLY this user; without a valid id it refuses to start.
+HEALTH_OS_OWNER_ID=your_telegram_numeric_id
+
 # Optional
 ANTHROPIC_MODEL=claude-3-5-haiku-latest
 HEALTH_OS_TIMEZONE=Asia/Omsk
