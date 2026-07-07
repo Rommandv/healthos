@@ -102,13 +102,13 @@ KNOWLEDGE_TOPIC_DIRS = {
     "training": KNOWLEDGE_DIR / "training",
 }
 KNOWLEDGE_TOPIC_PATTERNS = {
-    "sleep": r"(сон|sleep|спал\w*|бессонниц\w*|проснул\w*|л[её]г|выспал\w*)",
-    "caffeine": r"(кофе|caffeine|стимулятор\w*|фокус)",
-    "cardio": r"(zone\s*2|кардио|cardio|vo2|выносливост\w*)",
-    "recovery": r"(сауна|баня|восстановлен\w*|стресс|nsdr)",
-    "nutrition": r"(еда|питани\w*|белок|калори\w*|meal)",
-    "biomarkers": r"(анализ\w*|apob|ldl|hdl|hba1c|инсулин)",
-    "training": r"(тренировк\w*|упражнен\w*|мышц\w*|силов\w*)",
+    "sleep": r"(сон\w*|сна\b|спал\w*|спать|высп\w*|засып\w*|недосып\w*|бессонниц\w*|sleep)",
+    "caffeine": r"(кофе\w*|caffeine|стимулятор\w*|фокус\w*|бодрост\w*)",
+    "cardio": r"(zone\s*2|зон[аеуы]?\s*2|кардио|cardio|vo2|аэроб\w*|пульс\w*|выносливост\w*|бег\w*)",
+    "recovery": r"(саун\w*|бан[яею]\w*|парн\w*|холод\w*|купел\w*|ледян\w*|восстанов\w*|стресс\w*|nsdr|контраст\w*)",
+    "nutrition": r"(еда\b|еды\b|пита\w*|бел[ко]\w*|калори\w*|углевод\w*|бжу|кбжу|нутриент\w*|рацион\w*|meal)",
+    "biomarkers": r"(анализ\w*|биомаркер\w*|apob|ldl|hdl|hba1c|инсулин\w*|холестерин\w*|липид\w*|триглицерид\w*|глюкоз\w*)",
+    "training": r"(тренир\w*|тренировк\w*|упражнен\w*|мышц\w*|силов\w*|гипертроф\w*|присед\w*|жим\w*)",
 }
 
 
@@ -416,14 +416,12 @@ def should_include_daily_log(intent: str) -> bool:
 
 
 def knowledge_files_for_intent(intent: str, user_text: str) -> list[Path]:
-    if intent == "training" and re.search(
-        r"(zone\s*2|vo2|max|кардио|аэроб\w*|пульс|endurance|выносливост\w*)",
-        user_text,
-        re.IGNORECASE,
-    ):
-        return retrieve_knowledge_files(user_text)
-    if intent not in {"sleep_recovery", "biomarkers_imaging"}:
-        return []
+    # The LLM classifies info-questions ("расскажи про сауну", "что важно для
+    # ApoB") as `general`, so gating retrieval on specific intents silently
+    # skipped the knowledge base. retrieve_knowledge_files already self-gates:
+    # no matching topic -> []. So retrieve for every message; only knowledge
+    # questions (topic match) pull curated files, and this only runs on the
+    # LLM answer path (meal/training facts use deterministic formatters).
     return retrieve_knowledge_files(user_text)
 
 
@@ -482,9 +480,12 @@ def retrieve_knowledge_files(user_text: str) -> list[Path]:
 
     for topic in topics:
         for path in sorted(KNOWLEDGE_TOPIC_DIRS[topic].glob("*")):
-            score = score_knowledge_file(path, query_tokens)
-            if score <= 0:
+            if not should_include_context_file(path):
                 continue
+            # The topic pattern already matched -> the file is on-topic. Give it
+            # a base score so a form mismatch (сауну vs сауна) can't drop it;
+            # token overlap only ranks within the topic.
+            score = 1 + score_knowledge_file(path, query_tokens)
             scored_files.append((score, path.relative_to(BASE_DIR).as_posix(), path))
 
     scored_files.sort(key=lambda item: (-item[0], item[1]))
