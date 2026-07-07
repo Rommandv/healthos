@@ -21,6 +21,7 @@ Run: python3 tests/eval_llm_classify.py
 """
 import os
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -29,8 +30,8 @@ sys.path.insert(0, str(HEALTH_OS))
 
 import bot  # noqa: E402
 
-N = 5
-WORKERS = 6
+N = int(os.getenv("EVAL_N", "5"))
+WORKERS = int(os.getenv("EVAL_WORKERS", "3"))
 SAFETY_SECTIONS = {"A no-write", "C role<->write"}
 
 # (section, message, expected_fact, expected_role | None)
@@ -65,6 +66,10 @@ EFFECTIVE_CASES = [
     ("CONTROL", "прошёл 6 км", "training", None),
     ("CONTROL", "съел омлет, люблю его", "meal", "meal"),
     ("CONTROL", "сегодня 82 кг утром", "weight", None),
+    # NOTE — physical observations are remembered (Vlad: боль/ограничения)
+    ("NOTE", "болит плечо", "note", None),
+    ("NOTE", "болит плечо после жима", "note", None),
+    ("NOTE", "потянул спину на становой", "note", None),
 ]
 
 INTENT_CASES = [
@@ -80,7 +85,6 @@ INTENT_CASES = [
 P4_CASES = [
     "стоит ли уходить в дефицит или держать поддержку?",
     "как лучше восстановиться после недосыпа?",
-    "болит плечо",
 ]
 
 
@@ -126,7 +130,14 @@ def main() -> int:
 
     def run(job):
         i, _r = job
-        return i, bot.shadow_classify(cases[i]["msg"])
+        # shadow_classify swallows transport errors as None; retry with backoff
+        # so transient API hiccups don't read as quality fails.
+        for attempt in range(5):
+            out = bot.shadow_classify(cases[i]["msg"])
+            if out is not None:
+                return i, out
+            time.sleep(2 ** (attempt + 1))
+        return i, None
 
     raw = {i: [] for i in range(len(cases))}
     with ThreadPoolExecutor(max_workers=WORKERS) as pool:
@@ -134,29 +145,36 @@ def main() -> int:
             raw[i].append(out)
 
     rows = []
+    transport_errors = 0
     for i, exp in enumerate(cases):
-        outs = raw[i]
+        outs = [o for o in raw[i] if o is not None]
+        transport_errors += sum(1 for o in raw[i] if o is None)
         oks = [passes(o, exp) for o in outs]
         rows.append({
-            "exp": exp, "ok": sum(oks),
+            "exp": exp, "ok": sum(oks), "valid": len(outs),
             "bad": next((o for o, k in zip(outs, oks) if not k), None),
         })
 
     width = min(50, max(len(r["exp"]["msg"]) for r in rows))
-    print(f"{'SECTION':<14} | {'MESSAGE':<{width}} | OK/{N}")
-    print("-" * (14 + width + 8))
+    print(f"{'SECTION':<14} | {'MESSAGE':<{width}} | OK/valid")
+    print("-" * (14 + width + 12))
     for r in rows:
         m = r["exp"]["msg"]
         m = m if len(m) <= width else m[: width - 1] + "…"
-        mark = "PASS" if r["ok"] == N else ("FLAKY" if r["ok"] else "FAIL")
-        print(f"{r['exp']['section']:<14} | {m:<{width}} | {r['ok']}/{N} {mark}")
+        if r["valid"] == 0:
+            mark = "TRANSPORT"
+        elif r["ok"] == r["valid"]:
+            mark = "PASS"
+        else:
+            mark = "FLAKY" if r["ok"] else "FAIL"
+        print(f"{r['exp']['section']:<14} | {m:<{width}} | {r['ok']}/{r['valid']} {mark}")
 
-    print("\n=== FAILURES ===")
-    fails = [r for r in rows if r["ok"] < N]
+    print("\n=== QUALITY FAILURES (valid responses only) ===")
+    fails = [r for r in rows if r["valid"] and r["ok"] < r["valid"]]
     for r in fails:
         e = r["exp"]
         tag = "SAFETY-FAIL" if e["safety"] else "FAIL"
-        print(f"[{tag}] {e['section']} | {e['msg']}  ({r['ok']}/{N})")
+        print(f"[{tag}] {e['section']} | {e['msg']}  ({r['ok']}/{r['valid']})")
         print(f"    expected loggable={e['loggable']} log_type={e['log_type']} "
               f"intent={e['intent']}  sample: {r['bad']}")
     if not fails:
@@ -165,14 +183,20 @@ def main() -> int:
     def rate(safety):
         sel = [r for r in rows if r["exp"]["safety"] == safety]
         ok = sum(r["ok"] for r in sel)
-        total = len(sel) * N
+        total = sum(r["valid"] for r in sel)
         return ok, total, (ok / total if total else 1.0)
 
     s_ok, s_tot, s = rate(True)
     o_ok, o_tot, o = rate(False)
-    print("\n=== SUMMARY (LLM-alone = prod behavior) ===")
+    total_runs = len(rows) * N
+    transport_rate = transport_errors / total_runs
+    print("\n=== SUMMARY (LLM-alone = prod behavior; quality over valid runs) ===")
+    print(f"transport errors: {transport_errors}/{total_runs} runs ({transport_rate:.1%})")
     print(f"safety:     {s_ok}/{s_tot} ({s:.3f})  target 1.000")
     print(f"non-safety: {o_ok}/{o_tot} ({o:.3f})  target >= 0.950")
+    if transport_rate > 0.10:
+        print("\nGATE: INCONCLUSIVE — transport error rate too high to certify; re-run when API is stable.")
+        return 3
     gate = s == 1.0 and o >= 0.95
     print(f"\nGATE: {'PASS' if gate else 'FAIL'}")
     return 0 if gate else 1

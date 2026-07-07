@@ -1628,7 +1628,7 @@ SHADOW_CLASSIFY_TOOL = {
             "loggable": {"type": "boolean"},
             "log_type": {
                 "type": "string",
-                "enum": ["meal", "weight", "sleep", "training", "none"],
+                "enum": ["meal", "weight", "sleep", "training", "note", "none"],
             },
             "confidence": {"type": "number"},
             "extracted_fields": {
@@ -1695,8 +1695,12 @@ SHADOW_CLASSIFY_INSTRUCTIONS = (
     "- вопроса/планирования: «как», «какой», «стоит ли», «расскажи».\n"
     "Приоритет: если в сообщении есть И свершившееся действие, И мнение/намерение "
     "— побеждает действие (это факт): «съел омлет, люблю его» → loggable=true, meal.\n\n"
-    "log_type — meal|weight|sleep|training|none. Консистентность: если "
-    "loggable=false, то log_type ВСЕГДА none.\n\n"
+    "log_type — meal|weight|sleep|training|note|none. Консистентность: если "
+    "loggable=false, то log_type ВСЕГДА none.\n"
+    "note — физическое наблюдение о теле, которое надо помнить для адаптации: "
+    "боль, травма, ограничение движения, недомогание («болит плечо после жима», "
+    "«потянул спину»). Это факт → loggable=true, log_type=note. Вопросы, планы и "
+    "болтовня — НЕ note, это none.\n\n"
     "extracted_fields — при loggable=true извлеки поля под log_type: meal "
     "(description + calories/protein_g/fat_g/carbs_g, если названы), weight (kg), "
     "sleep (hours, quality), training (name, duration_min, exercises). Только явно "
@@ -1793,6 +1797,11 @@ def write_classified_fact(
             "time": now,
             "logged_by": username,
         })
+        return True
+    if log_type == "note":
+        # Physical observations (pain, injury, limitation) are remembered for
+        # future adaptation — per Vlad's principles.
+        daily_log["notes"].append({"time": now, "text": text, "logged_by": username})
         return True
     return False
 
@@ -1895,14 +1904,27 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     # meal / training facts -> deterministic formatters from the stored fields.
     if wrote_fact and log_type == "meal":
-        await update.message.reply_text(format_logged_meal_response(daily_log))
+        if daily_log["meals"][-1].get("calories") is not None:
+            await update.message.reply_text(format_logged_meal_response(daily_log))
+            return
+        # No explicit numbers: per Vlad's Food Estimation Priority the coach
+        # estimates a typical portion in the REPLY (stored data stays
+        # explicit-only). Reuses the meal answer path + range extraction.
+        try:
+            answer = await asyncio.to_thread(call_anthropic, text, "meal", daily_log, "meal")
+            await update.message.reply_text(
+                format_meal_response(answer, "meal", daily_log, text)
+            )
+        except Exception:
+            await update.message.reply_text(format_logged_meal_response(daily_log))
         return
     if wrote_fact and log_type == "training":
         await update.message.reply_text(format_logged_training_response(daily_log))
         return
 
-    # everything else (general / behaviorist / sleep / biomarkers / logged weight/sleep)
-    # -> LLM answer with intent-specific context.
+    # everything else (general / behaviorist / sleep / biomarkers / logged
+    # weight/sleep, and remembered notes: pain/limitations) -> LLM answer with
+    # intent-specific context.
     try:
         answer = await asyncio.to_thread(call_anthropic, text, intent, daily_log, intent)
     except Exception:
