@@ -1788,15 +1788,28 @@ def write_classified_fact(
         return False
     if log_type == "training":
         training = fields.get("training") or {}
-        daily_log["training"].append({
-            "type": training.get("type") or "strength",
-            "name": training.get("name"),
-            "exercises": training.get("exercises") or [],
-            "duration_min": training.get("duration_min"),
-            "raw": text,
-            "time": now,
-            "logged_by": username,
-        })
+        new_exercises = training.get("exercises") or []
+        if daily_log["training"]:
+            # Accumulate today's session: log sets/exercises one message at a
+            # time (Vlad's set-by-set flow) without a fragile state machine.
+            session = daily_log["training"][-1]
+            session.setdefault("exercises", [])
+            session["exercises"].extend(new_exercises)
+            if training.get("name") and not session.get("name"):
+                session["name"] = training.get("name")
+            if training.get("duration_min"):
+                session["duration_min"] = training.get("duration_min")
+            session["time"] = now
+        else:
+            daily_log["training"].append({
+                "type": training.get("type") or "strength",
+                "name": training.get("name"),
+                "exercises": new_exercises,
+                "duration_min": training.get("duration_min"),
+                "raw": text,
+                "time": now,
+                "logged_by": username,
+            })
         return True
     if log_type == "note":
         # Physical observations (pain, injury, limitation) are remembered for
@@ -1804,6 +1817,68 @@ def write_classified_fact(
         daily_log["notes"].append({"time": now, "text": text, "logged_by": username})
         return True
     return False
+
+
+def _exercise_name(ex) -> str:
+    if isinstance(ex, dict):
+        return str(ex.get("name") or "").strip().lower()
+    if isinstance(ex, str):
+        return ex.strip().lower()
+    return ""
+
+
+def _exercise_top(ex) -> tuple[float | None, float | None]:
+    """Best-effort (weight, reps) of an exercise for progression comparison."""
+    if not isinstance(ex, dict):
+        return None, None
+    weight = ex.get("weight") if ex.get("weight") is not None else ex.get("weight_kg")
+    reps = ex.get("reps")
+    sets = ex.get("sets")
+    if reps is None and isinstance(sets, list) and sets and isinstance(sets[0], dict):
+        first = sets[0]
+        weight = weight if weight is not None else (first.get("weight") or first.get("weight_kg"))
+        reps = first.get("reps")
+    w = weight if isinstance(weight, (int, float)) else None
+    r = reps if isinstance(reps, (int, float)) else None
+    return w, r
+
+
+def training_progression_line(daily_log: dict) -> str | None:
+    """Compare today's primary lift with the most recent EARLIER day that logged
+    the same exercise. Vlad's core: see progress, notice plateau."""
+    session = (daily_log.get("training") or [{}])[-1]
+    primary = None
+    for ex in session.get("exercises") or []:
+        w, r = _exercise_top(ex)
+        if w is not None and _exercise_name(ex):
+            primary = (ex, w, r)
+            break
+    if not primary:
+        return None
+    ex, w, r = primary
+    name = _exercise_name(ex)
+    label = (ex.get("name") if isinstance(ex, dict) else name) or "упражнение"
+    today = daily_log.get("date") or today_str()
+
+    def fmt(weight, reps):
+        return f"{weight:g} кг×{int(reps)}" if reps else f"{weight:g} кг"
+
+    for date in reversed(recent_log_dates(30)):  # nearest earlier day first
+        if date >= today:
+            continue
+        for prev_session in read_daily_log(date).get("training") or []:
+            for prev_ex in prev_session.get("exercises") or []:
+                if _exercise_name(prev_ex) != name:
+                    continue
+                pw, pr = _exercise_top(prev_ex)
+                if pw is None:
+                    continue
+                if w > pw:
+                    return f"Прогресс: {label} {fmt(w, r)} — было {fmt(pw, pr)} (+{w - pw:g} кг) 💪"
+                if w < pw:
+                    return f"{label}: {fmt(w, r)} — в прошлый раз {fmt(pw, pr)}. Разгрузка ок, следи за трендом."
+                return f"Плато: {label} {fmt(w, r)} — как в прошлый раз. Пора добавить повтор или +вес."
+    return None  # first time for this exercise
 
 
 def format_logged_training_response(daily_log: dict) -> str:
@@ -1833,6 +1908,9 @@ def format_logged_training_response(daily_log: dict) -> str:
         lines.append("\n".join(summary))
     if entry.get("duration_min"):
         lines.append(f"Длительность: {entry['duration_min']} мин")
+    progression = training_progression_line(daily_log)
+    if progression:
+        lines.append(progression)
     lines.append("Следующий шаг: фиксируй вес и повторы — так видно прогрессию.")
     return "\n\n".join(lines)
 
