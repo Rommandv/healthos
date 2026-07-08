@@ -6,6 +6,7 @@ import json
 import os
 import re
 import sys
+from collections import deque
 from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -1243,7 +1244,8 @@ def format_meal_response(
 
 
 def call_anthropic(
-    user_text: str, entry_type: str, daily_log: dict, context_intent: str | None = None
+    user_text: str, entry_type: str, daily_log: dict,
+    context_intent: str | None = None, history: str | None = None,
 ) -> str:
     client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
     health_context = load_health_context(user_text, daily_log, intent=context_intent)
@@ -1270,7 +1272,8 @@ def call_anthropic(
                 "role": "user",
                 "content": (
                     f"Health OS context:\n{health_context}\n\n"
-                    f"Тип записи: {entry_type}{entry_note}\n\n"
+                    + (f"Недавний диалог (учитывай, отвечай в контексте):\n{history}\n\n" if history else "")
+                    + f"Тип записи: {entry_type}{entry_note}\n\n"
                     f"Сообщение пользователя: {user_text}"
                 ),
             }
@@ -1588,27 +1591,50 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     # which would drop those vision-only fields. No regex understanding here either.
     # Cleanup must keep this path's deps (format_meal_response, MEAL_RANGE_FIELDS).
     daily_log = read_daily_log()
-    now = datetime.now(TIMEZONE).strftime("%H:%M")
-    meal_entry = {
-        "time": now,
-        "description": vision_result.get("description") or caption or "еда с фото",
-        "calories": None,
-        "protein_g": None,
-        "fat_g": None,
-        "carbs_g": None,
-        "source": "photo",
-        "confidence": vision_result.get("confidence") or "low",
-        "notes": vision_result.get("notes"),
-        "logged_by": username,
-    }
+    now_dt = datetime.now(TIMEZONE)
+    now = now_dt.strftime("%H:%M")
+
+    # Vlad's rule: a photo of the meal you just logged by text is a
+    # CLARIFICATION of that entry, not a second meal. Update in place when the
+    # last meal is fresh and not already a photo log.
+    meals = daily_log.get("meals") or []
+    updating = False
+    if meals and meals[-1].get("source") != "photo":
+        recency = minutes_since_logged(meals[-1].get("time"), now_dt)
+        updating = recency is not None and recency <= MEAL_CORRECTION_WINDOW_MIN
+
+    if updating:
+        meal_entry = meals[-1]
+        # keep the user's own words as description; vision refines the numbers
+        meal_entry["source"] = "photo"
+        meal_entry["confidence"] = vision_result.get("confidence") or "low"
+        meal_entry["notes"] = vision_result.get("notes")
+        meal_entry["time"] = now
+        entry_type = "meal_update"
+    else:
+        meal_entry = {
+            "time": now,
+            "description": vision_result.get("description") or caption or "еда с фото",
+            "calories": None,
+            "protein_g": None,
+            "fat_g": None,
+            "carbs_g": None,
+            "source": "photo",
+            "confidence": vision_result.get("confidence") or "low",
+            "notes": vision_result.get("notes"),
+            "logged_by": username,
+        }
+        daily_log["meals"].append(meal_entry)
+        entry_type = "meal"
     for field in MEAL_RANGE_FIELDS:
         meal_entry[field] = vision_result.get(field)
-    daily_log["meals"].append(meal_entry)
     write_daily_log(daily_log)
 
-    await update.message.reply_text(
-        format_meal_response("", "meal", daily_log, str(meal_entry["description"]))
+    reply_text = format_meal_response(
+        "", entry_type, daily_log, str(meal_entry["description"])
     )
+    remember_exchange(f"[фото еды] {caption or ''}".strip(), reply_text)
+    await update.message.reply_text(reply_text)
 
 
 # --- LLM classification (prod: single source of truth for intent + write) ---
@@ -1667,6 +1693,10 @@ SHADOW_CLASSIFY_TOOL = {
                     },
                 },
             },
+            "corrects_recent_meal": {
+                "type": "boolean",
+                "description": "true, если сообщение уточняет/исправляет только что залогированную еду (жирность, граммы, фото того же приёма), а НЕ новый приём пищи.",
+            },
         },
         "required": ["intent", "loggable", "log_type", "confidence"],
     },
@@ -1705,15 +1735,44 @@ SHADOW_CLASSIFY_INSTRUCTIONS = (
     "extracted_fields — при loggable=true извлеки поля под log_type: meal "
     "(description + calories/protein_g/fat_g/carbs_g, если названы), weight (kg), "
     "sleep (hours, quality), training (name, duration_min, exercises). Только явно "
-    "указанные значения, ничего не выдумывай.\n\n"
+    "указанные значения, ничего не выдумывай.\n"
+    "training.exercises: извлеки ВСЕ упражнения из сообщения (их может быть 5-6+), "
+    "каждое как {name, weight_kg?, sets?, reps?}. Ничего не пропускай.\n"
+    "description и названия упражнений — СТРОГО из слов пользователя, на его языке. "
+    "НЕ добавляй ингредиенты, марки, детали, которых он не называл "
+    "(«творог» ≠ «творог с ягодами»; «лег пресс» остаётся «лег пресс», не Leg press).\n\n"
+    "Контекст диалога: если дан недавний диалог и сообщение — короткий ответ на "
+    "вопрос Sofi или продолжение темы, классифицируй С УЧЁТОМ контекста "
+    "(например, ответ «Цезарь» на вопрос «что ты ел?» — это еда из прошлого разговора).\n"
+    "corrects_recent_meal=true, если пользователь уточняет только что записанную еду "
+    "(жирность/граммы/то же блюдо на фото) — это НЕ новый приём.\n\n"
     "confidence — 0..1. При любом сомнении loggable=false."
 )
 
 
-def shadow_classify(text: str) -> dict | None:
+# Short-term dialog memory (in-process): the last few exchanges give the
+# classifier and the coach conversational context ("? а всё остальное",
+# answering the bot's own question). Lost on restart — acceptable.
+CONVERSATION_MEMORY: deque = deque(maxlen=8)
+
+
+def conversation_history_text() -> str:
+    return "\n".join(
+        f"{'Пользователь' if role == 'user' else 'Sofi'}: {text}"
+        for role, text in CONVERSATION_MEMORY
+    )
+
+
+def remember_exchange(user_text: str, bot_reply: str) -> None:
+    CONVERSATION_MEMORY.append(("user", user_text[:400]))
+    CONVERSATION_MEMORY.append(("bot", bot_reply[:400]))
+
+
+def shadow_classify(text: str, history: str | None = None) -> dict | None:
     """LLM classification — the single source of truth for the write/role decision.
-    Returns {intent, loggable, log_type, confidence, extracted_fields} or None on
-    any failure (no key / timeout / invalid). Caller fails safe on None."""
+    Returns {intent, loggable, log_type, confidence, extracted_fields,
+    corrects_recent_meal} or None on any failure (no key / timeout / invalid).
+    Caller fails safe on None."""
     if not os.getenv("ANTHROPIC_API_KEY"):
         return None
     try:
@@ -1722,14 +1781,20 @@ def shadow_classify(text: str) -> dict | None:
             f"## directives\n{load_text_file(DIRECTIVES_FILE)}\n\n"
             f"## profile\n{load_text_file(USER_PROFILE_FILE)}"
         )
+        history_part = f"\n\nНедавний диалог:\n{history}" if history else ""
         response = client.messages.create(
             model=ANTHROPIC_MODEL,
-            max_tokens=300,
+            # 1024: a 6-exercise workout message must fit into extracted_fields;
+            # 300 truncated the tool JSON after the first exercise.
+            max_tokens=1024,
             temperature=0,
             system=SHADOW_CLASSIFY_INSTRUCTIONS,
             tools=[SHADOW_CLASSIFY_TOOL],
             tool_choice={"type": "tool", "name": "classify_message"},
-            messages=[{"role": "user", "content": f"{context}\n\nСообщение:\n{text}"}],
+            messages=[{
+                "role": "user",
+                "content": f"{context}{history_part}\n\nНовое сообщение пользователя:\n{text}",
+            }],
         )
         for block in response.content:
             if getattr(block, "type", None) == "tool_use" and block.name == "classify_message":
@@ -1740,24 +1805,57 @@ def shadow_classify(text: str) -> dict | None:
                     "log_type": data.get("log_type"),
                     "confidence": data.get("confidence"),
                     "extracted_fields": data.get("extracted_fields") or {},
+                    "corrects_recent_meal": bool(data.get("corrects_recent_meal")),
                 }
         return None
     except Exception:
         return None
 
 
+def minutes_since_logged(time_str, now_dt: datetime) -> float | None:
+    """Minutes since an 'HH:MM' log timestamp today; None if unparsable/future."""
+    try:
+        hours, minutes = map(int, str(time_str).split(":"))
+        then = now_dt.replace(hour=hours, minute=minutes, second=0, microsecond=0)
+    except (ValueError, AttributeError):
+        return None
+    delta = (now_dt - then).total_seconds() / 60
+    return delta if delta >= 0 else None
+
+
+MEAL_CORRECTION_WINDOW_MIN = 40
+
+
 def write_classified_fact(
-    daily_log: dict, log_type: str, fields: dict, text: str, username: str | None
+    daily_log: dict, log_type: str, fields: dict, text: str, username: str | None,
+    corrects_recent_meal: bool = False,
 ) -> bool:
     """Code owns the write. The LLM only decides + extracts; this validates ranges
     and stores. Returns True if a fact was written."""
-    now = datetime.now(TIMEZONE).strftime("%H:%M")
+    now_dt = datetime.now(TIMEZONE)
+    now = now_dt.strftime("%H:%M")
 
     def _nonneg(value):
         return int(value) if isinstance(value, (int, float)) and value >= 0 else None
 
     if log_type == "meal":
         meal = fields.get("meal") or {}
+        meals = daily_log.get("meals") or []
+        # Vlad's rule: a correction within ~30-40 min UPDATES the recent meal
+        # instead of duplicating it (fat %, grams, same dish clarified).
+        if corrects_recent_meal and meals:
+            recency = minutes_since_logged(meals[-1].get("time"), now_dt)
+            if recency is not None and recency <= MEAL_CORRECTION_WINDOW_MIN:
+                latest = meals[-1]
+                if meal.get("description"):
+                    latest["description"] = meal["description"]
+                for field in ("calories", "protein_g", "fat_g", "carbs_g"):
+                    value = _nonneg(meal.get(field))
+                    if value is not None:
+                        latest[field] = value
+                latest["time"] = now
+                daily_log["_meal_updated"] = True
+                return True
         daily_log["meals"].append({
             "time": now,
             "description": meal.get("description") or text,
@@ -1939,8 +2037,9 @@ def format_logged_meal_response(daily_log: dict) -> str:
                 consumed[field] += int(value)
     remaining = {field: max(targets.get(field, 0) - consumed[field], 0) for field in consumed}
 
+    header = "Обновил запись" if daily_log.get("_meal_updated") else "Записал"
     return "\n\n".join([
-        f"Записал: {description}",
+        f"{header}: {description}",
         f"Оценка:\n{format_nutrition(estimate)}",
         f"Остаток дня:\n{format_nutrition(remaining)}",
         "Следующий шаг: следующий приём собери вокруг белка.",
@@ -1956,59 +2055,70 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     username = update.effective_user.username if update.effective_user else None
+    history = conversation_history_text()
+
+    async def reply(answer_text: str) -> None:
+        remember_exchange(text, answer_text)
+        await update.message.reply_text(answer_text)
 
     # LLM is the single source of truth for intent + the write decision.
     result = None
     if os.getenv("ANTHROPIC_API_KEY"):
         try:
-            result = await asyncio.to_thread(shadow_classify, text)
+            result = await asyncio.to_thread(shadow_classify, text, history or None)
         except Exception:
             result = None
     if result is None:
         # Fail safe: no regex guessing, write nothing.
-        await update.message.reply_text("Не смог обработать сообщение. Повтори, пожалуйста.")
+        await reply("Не смог обработать сообщение. Повтори, пожалуйста.")
         return
 
     intent = result.get("intent") or "general"
     loggable = bool(result.get("loggable"))
     log_type = result.get("log_type") or "none"
     fields = result.get("extracted_fields") or {}
+    corrects_meal = bool(result.get("corrects_recent_meal"))
 
     daily_log = read_daily_log()
     wrote_fact = False
     if loggable and log_type != "none":
-        wrote_fact = write_classified_fact(daily_log, log_type, fields, text, username)
+        wrote_fact = write_classified_fact(
+            daily_log, log_type, fields, text, username,
+            corrects_recent_meal=corrects_meal,
+        )
         if wrote_fact:
             write_daily_log(daily_log)
 
     # meal / training facts -> deterministic formatters from the stored fields.
     if wrote_fact and log_type == "meal":
         if daily_log["meals"][-1].get("calories") is not None:
-            await update.message.reply_text(format_logged_meal_response(daily_log))
+            await reply(format_logged_meal_response(daily_log))
             return
         # No explicit numbers: per Vlad's Food Estimation Priority the coach
         # estimates a typical portion in the REPLY (stored data stays
         # explicit-only). Reuses the meal answer path + range extraction.
         try:
-            answer = await asyncio.to_thread(call_anthropic, text, "meal", daily_log, "meal")
-            await update.message.reply_text(
-                format_meal_response(answer, "meal", daily_log, text)
+            answer = await asyncio.to_thread(
+                call_anthropic, text, "meal", daily_log, "meal", history or None
             )
+            await reply(format_meal_response(answer, "meal", daily_log, text))
         except Exception:
-            await update.message.reply_text(format_logged_meal_response(daily_log))
+            await reply(format_logged_meal_response(daily_log))
         return
     if wrote_fact and log_type == "training":
-        await update.message.reply_text(format_logged_training_response(daily_log))
+        await reply(format_logged_training_response(daily_log))
         return
 
     # everything else (general / behaviorist / sleep / biomarkers / logged
     # weight/sleep, and remembered notes: pain/limitations) -> LLM answer with
-    # intent-specific context.
+    # intent-specific context + recent dialog.
     try:
-        answer = await asyncio.to_thread(call_anthropic, text, intent, daily_log, intent)
+        answer = await asyncio.to_thread(
+            call_anthropic, text, intent, daily_log, intent, history or None
+        )
     except Exception:
         answer = "Не смог сформулировать ответ. Повтори, пожалуйста."
-    await update.message.reply_text(answer)
+    await reply(answer)
 
 
 def main() -> None:
