@@ -6,6 +6,8 @@ import json
 import os
 import re
 import sys
+import time
+import logging
 from collections import deque
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -19,6 +21,37 @@ from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandl
 
 
 load_dotenv()
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+log = logging.getLogger("healthos")
+
+
+def with_retries(action, attempts: int = 3, base_delay: float = 1.5):
+    """Run an Anthropic call, retrying transient failures (overload/timeout/5xx).
+    A blip should never surface to the user as "не смог обработать"."""
+    last_error = None
+    for attempt in range(attempts):
+        try:
+            return action()
+        except Exception as error:  # SDK raises varied transport/status types
+            last_error = error
+            text = f"{type(error).__name__}: {error}".lower()
+            transient = any(
+                marker in text
+                for marker in (
+                    "overload", "rate limit", "429", "timeout", "timed out",
+                    "connection", "500", "502", "503", "529", "apistatuserror",
+                )
+            )
+            if not transient or attempt == attempts - 1:
+                raise
+            log.warning("transient API error (attempt %s): %s", attempt + 1, error)
+            time.sleep(base_delay * (2 ** attempt))
+    raise last_error
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
@@ -693,8 +726,11 @@ def build_health_review_brief() -> str:
 def write_daily_log(data: dict) -> None:
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
     path = log_path(data["date"])
+    # `_`-prefixed keys are in-process signalling (e.g. _meal_updated) and must
+    # never pollute the user's data file.
+    persisted = {key: value for key, value in data.items() if not str(key).startswith("_")}
     path.write_text(
-        yaml.safe_dump(data, allow_unicode=True, sort_keys=False),
+        yaml.safe_dump(persisted, allow_unicode=True, sort_keys=False),
         encoding="utf-8",
     )
 
@@ -1262,7 +1298,7 @@ def call_anthropic(
             "Max 5 lines. No calorie breakdown unless user explicitly asks."
         )
 
-    message = client.messages.create(
+    message = with_retries(lambda: client.messages.create(
         model=ANTHROPIC_MODEL,
         max_tokens=700,
         temperature=0.3,
@@ -1278,7 +1314,7 @@ def call_anthropic(
                 ),
             }
         ],
-    )
+    ))
     return "".join(block.text for block in message.content if block.type == "text").strip()
 
 
@@ -1504,7 +1540,14 @@ def format_today_summary(daily_log: dict) -> str:
         last = training[-1]
         name = last.get("name") or last.get("session_name") or "тренировка"
         exs = last.get("exercises") or []
-        sets_total = sum(len(e.get("sets") or []) for e in exs)
+        sets_total = 0
+        for e in exs:
+            # LLM shape: sets as a count (3) or a list of set dicts; be tolerant.
+            sets_value = e.get("sets") if isinstance(e, dict) else None
+            if isinstance(sets_value, (int, float)):
+                sets_total += int(sets_value)
+            elif isinstance(sets_value, list):
+                sets_total += len(sets_value)
         if exs or sets_total:
             training_parts.append(f"{name} · {len(exs)} упр. · {sets_total} подходов")
         else:
@@ -1738,6 +1781,8 @@ SHADOW_CLASSIFY_INSTRUCTIONS = (
     "указанные значения, ничего не выдумывай.\n"
     "training.exercises: извлеки ВСЕ упражнения из сообщения (их может быть 5-6+), "
     "каждое как {name, weight_kg?, sets?, reps?}. Ничего не пропускай.\n"
+    "Все названия (training.name, названия упражнений, meal.description) — "
+    "ТОЛЬКО по-русски, словами пользователя. Никакого английского.\n"
     "description и названия упражнений — СТРОГО из слов пользователя, на его языке. "
     "НЕ добавляй ингредиенты, марки, детали, которых он не называл "
     "(«творог» ≠ «творог с ягодами»; «лег пресс» остаётся «лег пресс», не Leg press).\n\n"
@@ -1782,7 +1827,7 @@ def shadow_classify(text: str, history: str | None = None) -> dict | None:
             f"## profile\n{load_text_file(USER_PROFILE_FILE)}"
         )
         history_part = f"\n\nНедавний диалог:\n{history}" if history else ""
-        response = client.messages.create(
+        response = with_retries(lambda: client.messages.create(
             model=ANTHROPIC_MODEL,
             # 1024: a 6-exercise workout message must fit into extracted_fields;
             # 300 truncated the tool JSON after the first exercise.
@@ -1795,7 +1840,7 @@ def shadow_classify(text: str, history: str | None = None) -> dict | None:
                 "role": "user",
                 "content": f"{context}{history_part}\n\nНовое сообщение пользователя:\n{text}",
             }],
-        )
+        ))
         for block in response.content:
             if getattr(block, "type", None) == "tool_use" and block.name == "classify_message":
                 data = dict(block.input)
@@ -1807,8 +1852,10 @@ def shadow_classify(text: str, history: str | None = None) -> dict | None:
                     "extracted_fields": data.get("extracted_fields") or {},
                     "corrects_recent_meal": bool(data.get("corrects_recent_meal")),
                 }
+        log.warning("classify returned no tool_use block")
         return None
     except Exception:
+        log.exception("classify failed")
         return None
 
 
@@ -2067,6 +2114,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         try:
             result = await asyncio.to_thread(shadow_classify, text, history or None)
         except Exception:
+            log.exception("classify call raised")
             result = None
     if result is None:
         # Fail safe: no regex guessing, write nothing.
@@ -2103,6 +2151,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             )
             await reply(format_meal_response(answer, "meal", daily_log, text))
         except Exception:
+            log.exception("meal estimate answer failed")
             await reply(format_logged_meal_response(daily_log))
         return
     if wrote_fact and log_type == "training":
@@ -2117,6 +2166,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             call_anthropic, text, intent, daily_log, intent, history or None
         )
     except Exception:
+        log.exception("answer call failed (intent=%s)", intent)
         answer = "Не смог сформулировать ответ. Повтори, пожалуйста."
     await reply(answer)
 
@@ -2156,11 +2206,6 @@ def main() -> None:
     )
     app.add_handler(MessageHandler(filters.PHOTO & owner, handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & owner, handle_message))
-
-    try:
-        asyncio.get_event_loop()
-    except RuntimeError:
-        asyncio.set_event_loop(asyncio.new_event_loop())
 
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
