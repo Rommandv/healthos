@@ -1,0 +1,438 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Фундамент</title>
+<style>
+  :root {
+    --bg: #F7F3EC;
+    --card: #FFFFFF;
+    --ink: #2B2A27;
+    --muted: #8F897E;
+    --faint: #B8B2A6;
+    --line: #ECE6DB;
+    --ok: #4C7A5A;
+    --ok-soft: #EAF1EC;
+    --warn: #A9762B;
+    --warn-soft: #F6EEDF;
+    --muted-soft: #F0EDE6;
+    --accent: #3A6EA5;
+    --radius: 18px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--ink);
+    font-size: 16px;
+    line-height: 1.45;
+    padding: max(20px, env(safe-area-inset-top)) 16px 48px;
+  }
+  .wrap { max-width: 640px; margin: 0 auto; }
+
+  /* шапка */
+  .date { font-size: 14px; color: var(--muted); letter-spacing: .02em; }
+  .verdict {
+    margin-top: 6px; font-size: 24px; font-weight: 700; letter-spacing: -0.02em;
+    display: flex; align-items: center; gap: 10px;
+  }
+  .verdict .dot { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+  .tone-ok .dot { background: var(--ok); }
+  .tone-warn .dot { background: var(--warn); }
+  .tone-muted .dot { background: var(--faint); }
+  .tone-muted { color: var(--muted); font-weight: 600; }
+
+  section { margin-top: 28px; }
+  .section-label {
+    font-size: 12px; font-weight: 600; color: var(--muted);
+    text-transform: uppercase; letter-spacing: .09em; margin-bottom: 10px;
+  }
+
+  .card {
+    background: var(--card); border-radius: var(--radius);
+    padding: 16px 18px; box-shadow: 0 1px 2px rgba(60,50,30,.05);
+    border: 1px solid var(--line);
+  }
+  .card + .card { margin-top: 12px; }
+
+  .pillar-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+  .pillar-title { font-size: 15px; font-weight: 650; }
+  .status {
+    font-size: 12.5px; font-weight: 600; padding: 3px 10px; border-radius: 99px; white-space: nowrap;
+  }
+  .status.ok { color: var(--ok); background: var(--ok-soft); }
+  .status.warn { color: var(--warn); background: var(--warn-soft); }
+  .status.muted { color: var(--muted); background: var(--muted-soft); }
+
+  .big { font-size: 28px; font-weight: 700; letter-spacing: -0.02em; margin-top: 8px; }
+  .big small { font-size: 15px; font-weight: 500; color: var(--muted); letter-spacing: 0; }
+  .sub { font-size: 13.5px; color: var(--muted); margin-top: 3px; }
+  .hint { font-size: 13.5px; color: var(--muted); margin-top: 8px; }
+
+  .row2 { display: flex; gap: 24px; margin-top: 8px; flex-wrap: wrap; }
+  .metric .val { font-size: 22px; font-weight: 700; letter-spacing: -0.02em; }
+  .metric .val small { font-size: 13px; font-weight: 500; color: var(--muted); }
+  .metric .cap { font-size: 12.5px; color: var(--muted); margin-top: 1px; }
+
+  .spark { margin-top: 12px; }
+  .spark svg { display: block; width: 100%; height: 44px; }
+  .spark-cap { font-size: 11.5px; color: var(--faint); margin-top: 4px; }
+
+  /* месяц */
+  .coverage { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 4px; }
+  .cov-dot {
+    width: 12px; height: 12px; border-radius: 50%;
+    background: var(--muted-soft); position: relative;
+  }
+  .cov-dot.logged { background: var(--ok); opacity: .75; }
+  .cov-dot.future { background: transparent; border: 1px dashed var(--line); }
+  .cov-dot.today { box-shadow: 0 0 0 2px var(--bg), 0 0 0 3.5px var(--faint); }
+
+  /* анализы */
+  .panel-date { font-size: 12.5px; color: var(--muted); font-weight: 500; }
+  table.markers { width: 100%; border-collapse: collapse; margin-top: 8px; }
+  table.markers td { padding: 6px 0; font-size: 14.5px; border-top: 1px solid var(--line); vertical-align: baseline; }
+  table.markers tr:first-child td { border-top: none; }
+  td.mname { color: var(--ink); padding-right: 10px; }
+  td.mval { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; font-weight: 600; }
+  td.mval small { color: var(--muted); font-weight: 400; }
+  tr.warn td.mname::before {
+    content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+    background: var(--warn); margin-right: 8px; vertical-align: 1px;
+  }
+  .mtarget { font-size: 12px; color: var(--muted); }
+
+  .historical-group { opacity: .72; }
+  .group-note { font-size: 13px; color: var(--muted); margin: 6px 2px 12px; }
+
+  .imaging-row { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; padding: 8px 0; border-top: 1px solid var(--line); }
+  .imaging-row:first-child { border-top: none; }
+  .imaging-row .iname { font-weight: 600; font-size: 15px; }
+  .imaging-row .idate { font-size: 13.5px; color: var(--muted); white-space: nowrap; }
+  .conclusion { font-size: 13.5px; color: var(--muted); margin-top: 6px; }
+  .conclusion li { margin-left: 18px; margin-top: 2px; }
+
+  .retest-item { padding: 9px 0; border-top: 1px solid var(--line); }
+  .retest-item:first-child { border-top: none; }
+  .retest-item .t { font-size: 14.5px; font-weight: 550; }
+  .retest-item .r { font-size: 12.5px; color: var(--muted); margin-top: 1px; }
+
+  /* директивы */
+  details.directives { border-radius: var(--radius); background: var(--card); border: 1px solid var(--line); }
+  details.directives summary {
+    padding: 14px 18px; font-size: 15px; font-weight: 650; cursor: pointer; list-style: none;
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  details.directives summary::-webkit-details-marker { display: none; }
+  details.directives summary::after { content: "›"; color: var(--faint); font-size: 20px; transform: rotate(90deg); transition: transform .15s; }
+  details[open].directives summary::after { transform: rotate(-90deg); }
+  .dir-body { padding: 0 18px 16px; }
+  .dir-group { margin-top: 10px; }
+  .dir-group .g { font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .07em; }
+  .dir-group ul { list-style: none; margin-top: 4px; }
+  .dir-group li { font-size: 14px; padding: 3px 0; color: var(--ink); }
+  .dir-group li b { font-weight: 650; }
+
+  .empty { color: var(--muted); font-size: 14.5px; }
+  footer { margin-top: 36px; text-align: center; font-size: 12px; color: var(--faint); }
+
+  @media (min-width: 560px) {
+    .pillars { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .pillars .card + .card { margin-top: 0; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap" id="app">
+  <div class="date" id="hdr-date">Загрузка…</div>
+  <div class="verdict tone-muted" id="hdr-verdict"><span class="dot"></span><span>—</span></div>
+  <div id="content"></div>
+  <footer>Фундамент · read-only поверх Health OS · источник: data/*.yaml</footer>
+</div>
+
+<script>
+"use strict";
+
+const esc = s => String(s).replace(/[&<>"']/g, c =>
+  ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+const fmt = v => v === null || v === undefined ? "—"
+  : (typeof v === "number" ? (Number.isInteger(v) ? v : v.toFixed(1)) : esc(v));
+
+// спарклайн: null = разрыв; одиночные точки рисуем кружком
+function sparkline(values, opts = {}) {
+  const w = 260, h = 40, pad = 4;
+  const nums = values.filter(v => v !== null && v !== undefined);
+  if (!nums.length) return '<div class="spark-cap">нет данных за период</div>';
+  let min = Math.min(...nums), max = Math.max(...nums);
+  if (opts.min !== undefined) min = Math.min(min, opts.min);
+  if (opts.max !== undefined) max = Math.max(max, opts.max);
+  if (max === min) { max += 1; min -= 1; }
+  const x = i => pad + i * (w - 2 * pad) / Math.max(values.length - 1, 1);
+  const y = v => h - pad - (v - min) * (h - 2 * pad) / (max - min);
+
+  let parts = [];
+  if (opts.target !== undefined && opts.target >= min && opts.target <= max) {
+    const ty = y(opts.target);
+    parts.push(`<line x1="${pad}" y1="${ty}" x2="${w-pad}" y2="${ty}" stroke="#D8D2C6" stroke-dasharray="3 4" stroke-width="1"/>`);
+  }
+  let seg = [];
+  const flush = () => {
+    if (seg.length === 1) {
+      parts.push(`<circle cx="${seg[0][0]}" cy="${seg[0][1]}" r="2.5" fill="#3A6EA5"/>`);
+    } else if (seg.length > 1) {
+      const d = seg.map((p, i) => (i ? "L" : "M") + p[0].toFixed(1) + " " + p[1].toFixed(1)).join(" ");
+      parts.push(`<path d="${d}" fill="none" stroke="#3A6EA5" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>`);
+    }
+    seg = [];
+  };
+  values.forEach((v, i) => { (v === null || v === undefined) ? flush() : seg.push([x(i), y(v)]); });
+  flush();
+  return `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">${parts.join("")}</svg>`;
+}
+
+function statusChip(text) {
+  const cls = text === "в коридоре" ? "ok" : (text === "нет данных" ? "muted" : "warn");
+  return `<span class="status ${cls}">${esc(text)}</span>`;
+}
+
+function card(title, statusHtml, bodyHtml) {
+  return `<div class="card">
+    <div class="pillar-head"><div class="pillar-title">${esc(title)}</div>${statusHtml || ""}</div>
+    ${bodyHtml}
+  </div>`;
+}
+
+function renderSleep(s) {
+  const t = s.today, tg = s.target;
+  const corridor = tg.hours_min !== null
+    ? (tg.hours_max !== null && tg.hours_max !== tg.hours_min ? `${tg.hours_min}–${tg.hours_max} ч` : `${tg.hours_min} ч`)
+    : "—";
+  let body;
+  if (t.hours === null) {
+    body = `<div class="big" style="color:var(--muted)">нет данных</div>
+            <div class="sub">цель: ${corridor}, отбой ${esc(tg.bed_time || "—")}</div>`;
+  } else {
+    const bed = t.bed_time ? ` · отбой ${esc(t.bed_time)}` : "";
+    body = `<div class="big">${fmt(t.hours)} <small>ч</small></div>
+            <div class="sub">цель ${corridor}, отбой ${esc(tg.bed_time || "—")}${bed}</div>`;
+  }
+  const spark = sparkline(s.days.map(d => d.hours), { target: tg.hours_min ?? undefined, min: 4, max: 9 });
+  return card("Сон", statusChip(t.status), body +
+    `<div class="spark">${spark}<div class="spark-cap">7 дней · пунктир — цель</div></div>`);
+}
+
+function renderMovement(m) {
+  const w = m.week;
+  const strengthTxt = `${w.strength_sessions}<small> / ${fmt(w.strength_target)}</small>`;
+  const z2Txt = `${w.zone2_min}<small> / ${fmt(w.zone2_target)} мин</small>`;
+  const anyData = m.weeks.some(x => x.strength_sessions > 0 || x.zone2_min > 0);
+  const chip = !anyData ? statusChip("нет данных")
+    : (w.strength_sessions >= (w.strength_target ?? Infinity) && w.zone2_min >= (w.zone2_target ?? Infinity)
+       ? statusChip("в коридоре") : `<span class="status muted">идёт неделя</span>`);
+  const spark = sparkline(m.weeks.map(x => x.zone2_min), { target: w.zone2_target ?? undefined, min: 0 });
+  return card("Движение", chip,
+    `<div class="row2">
+       <div class="metric"><div class="val">${strengthTxt}</div><div class="cap">силовые за неделю</div></div>
+       <div class="metric"><div class="val">${z2Txt}</div><div class="cap">Zone 2 за неделю</div></div>
+     </div>
+     <div class="spark">${spark}<div class="spark-cap">Zone 2 по неделям (${m.weeks.map(x => esc(x.label)).join(" · ")})</div></div>`);
+}
+
+function renderNutrition(n) {
+  const pt = n.protein_target;
+  const targetLine = pt
+    ? `белок ${pt.min_g}–${pt.max_g} г/день (${esc(pt.rule)} × ${fmt(n.weight_kg)} кг)` : "правило белка не задано";
+  const fiberLine = n.fiber_min_g !== null ? ` · клетчатка ≥ ${n.fiber_min_g} г` : "";
+  if (!n.days.length) {
+    return card("Питание", statusChip("нет данных"),
+      `<div class="big" style="color:var(--muted)">нет данных</div>
+       <div class="sub">${targetLine}${fiberLine}</div>
+       <div class="hint">Появится из логов еды в боте (protein_g, fiber_g по приёмам пищи).</div>`);
+  }
+  const last = n.days[n.days.length - 1];
+  const rows = n.days.map(d =>
+    `<tr><td class="mname">${esc(d.date.slice(8))}.${esc(d.date.slice(5,7))}</td>
+     <td class="mval">${fmt(d.protein_g)}<small> г белка</small>${d.fiber_g !== null ? ` · ${fmt(d.fiber_g)}<small> г клетч.</small>` : ""}</td></tr>`).join("");
+  return card("Питание", `<span class="status muted">${n.days.length} дн. за неделю</span>`,
+    `<div class="big">${fmt(last.protein_g)} <small>г белка · ${esc(last.date.slice(8))}.${esc(last.date.slice(5,7))}</small></div>
+     <div class="sub">${targetLine}${fiberLine}</div>
+     <table class="markers">${rows}</table>`);
+}
+
+function renderNervous(n) {
+  if (!n.days.length) {
+    return card("Нервная система", statusChip("нет данных"),
+      `<div class="big" style="color:var(--muted)">нет данных</div>
+       <div class="hint">${esc(n.source_hint)}</div>`);
+  }
+  const last = n.days[n.days.length - 1];
+  const bits = [];
+  if (last.energy !== null) bits.push(`<div class="metric"><div class="val">${fmt(last.energy)}<small> / 10</small></div><div class="cap">энергия</div></div>`);
+  if (last.rhr !== null) bits.push(`<div class="metric"><div class="val">${fmt(last.rhr)}<small> уд/мин</small></div><div class="cap">пульс покоя</div></div>`);
+  if (last.hrv !== null) bits.push(`<div class="metric"><div class="val">${fmt(last.hrv)}<small> мс</small></div><div class="cap">HRV</div></div>`);
+  const spark = sparkline(n.days.map(d => d.energy), { min: 1, max: 10 });
+  return card("Нервная система", `<span class="status muted">${esc(last.date.slice(8))}.${esc(last.date.slice(5,7))}</span>`,
+    `<div class="row2">${bits.join("")}</div>
+     <div class="spark">${spark}<div class="spark-cap">энергия 1–10 по дням</div></div>`);
+}
+
+function renderMonth(m) {
+  const dots = m.days.map(d =>
+    `<span class="cov-dot${d.logged ? " logged" : ""}${d.future ? " future" : ""}${d.today ? " today" : ""}" title="${d.day}"></span>`).join("");
+  const sleepSpark = sparkline(m.series_30.sleep, { min: 4, max: 9 });
+  const trainSpark = sparkline(m.series_30.training_min, { min: 0 });
+  return `<div class="card">
+    <div class="pillar-head"><div class="pillar-title">${esc(m.label)}</div>
+      <span class="status muted">залогировано: ${m.logged_count} дн.</span></div>
+    <div class="coverage" style="margin-top:12px">${dots}</div>
+    <div class="spark">${sleepSpark}<div class="spark-cap">сон, 30 дней</div></div>
+    <div class="spark">${trainSpark}<div class="spark-cap">минуты тренировок, 30 дней</div></div>
+  </div>`;
+}
+
+function markerRows(markers) {
+  return markers.map(mk => {
+    const target = mk.target ? `<div class="mtarget">цель: ${esc(String(mk.target).replace(/_/g, " "))}</div>` : "";
+    return `<tr${mk.flag === "warn" ? ' class="warn"' : ""}>
+      <td class="mname">${esc(mk.name)}${target}</td>
+      <td class="mval">${fmt(mk.value)} <small>${esc(mk.unit)}</small></td></tr>`;
+  }).join("");
+}
+
+function renderLabs(labs) {
+  let html = "";
+
+  // исследования (ЭКГ/ЭхоКГ)
+  const imagingRows = labs.imaging.map(im => {
+    const date = im.date ? esc(im.date) : "нет записи в системе";
+    const hl = im.highlights.length ? ` · ${im.highlights.map(esc).join(", ")}` : "";
+    const concl = im.conclusion.length
+      ? `<ul class="conclusion">${im.conclusion.map(c => `<li>${esc(c)}</li>`).join("")}</ul>` : "";
+    return `<div class="imaging-row"><div><span class="iname">${esc(im.label)}</span>${hl}${concl}</div>
+            <div class="idate">${date}</div></div>`;
+  }).join("");
+  html += `<div class="card">${imagingRows}</div>`;
+
+  // current панели
+  if (labs.current.length) {
+    labs.current.forEach(p => {
+      html += `<div class="card">
+        <div class="pillar-head"><div class="pillar-title">${esc(p.label)}</div>
+          <span class="panel-date">${esc(p.date || "")} · действующая</span></div>
+        <table class="markers">${markerRows(p.markers)}</table></div>`;
+    });
+  }
+
+  // historical панели — приглушённо
+  if (labs.historical.length) {
+    html += `<div class="historical-group">`;
+    if (labs.historical_note) html += `<div class="group-note">${esc(labs.historical_note)}</div>`;
+    labs.historical.forEach(p => {
+      html += `<div class="card">
+        <div class="pillar-head"><div class="pillar-title">${esc(p.label)}</div>
+          <span class="panel-date">${esc(p.date || "")} · архив</span></div>
+        <table class="markers">${markerRows(p.markers)}</table></div>`;
+    });
+    html += `</div>`;
+  }
+
+  return html;
+}
+
+function renderRetest(retest) {
+  if (!retest.length) return `<div class="card"><div class="empty">Очередь пуста.</div></div>`;
+  const rows = retest.map(r =>
+    `<div class="retest-item"><div class="t">${esc(r.title)}</div><div class="r">${esc(r.reason)}</div></div>`).join("");
+  return `<div class="card">${rows}</div>`;
+}
+
+function dirList(pairs) {
+  const items = pairs.filter(([, v]) => v !== null && v !== undefined && v !== "")
+    .map(([k, v]) => `<li>${esc(k)}: <b>${esc(String(v))}</b></li>`).join("");
+  return items ? `<ul>${items}</ul>` : `<ul><li class="empty">—</li></ul>`;
+}
+
+function renderDirectives(d) {
+  const s = d.sleep, t = d.training, n = d.nutrition, r = d.recovery;
+  const weights = Object.entries(d.weights).map(([k, v]) => `${k} ${v}`).join(" · ");
+  return `<details class="directives">
+    <summary>Директивы · контракт от ${esc(d.generated_at)}</summary>
+    <div class="dir-body">
+      <div class="dir-group"><div class="g">Режим</div>
+        ${dirList([["основной", d.primary_mode], ["веса", weights]])}</div>
+      <div class="dir-group"><div class="g">Сон</div>
+        ${dirList([
+          ["часы", s.target_hours_min !== undefined ? `${s.target_hours_min}–${s.target_hours_max ?? s.target_hours_min} ч` : null],
+          ["отбой / подъём", s.target_bed_time ? `${s.target_bed_time} / ${s.target_wake_time ?? "—"}` : null],
+          ["кофеин", s.caffeine_cutoff_hours_before_sleep ? `за ${s.caffeine_cutoff_hours_before_sleep} ч до сна, через ${s.caffeine_delay_after_wake_min ?? "—"} мин после подъёма` : null],
+        ])}</div>
+      <div class="dir-group"><div class="g">Тренировки</div>
+        ${dirList([
+          ["силовые / нед", t.min_strength_sessions_week],
+          ["Zone 2 / нед", t.min_zone2_minutes_week ? `${t.min_zone2_minutes_week} мин` : null],
+          ["VO2max / нед", t.max_vo2max_sessions_week ? `не более ${t.max_vo2max_sessions_week}` : null],
+          ["восстановление", t.recovery_rule],
+        ])}</div>
+      <div class="dir-group"><div class="g">Питание</div>
+        ${dirList([
+          ["белок", n.protein_rule],
+          ["клетчатка", n.fiber_minimum_g ? `≥ ${n.fiber_minimum_g} г/день` : null],
+        ])}</div>
+      <div class="dir-group"><div class="g">Восстановление</div>
+        ${dirList([["NSDR / нед", r.nsdr_sessions_week_min ? `≥ ${r.nsdr_sessions_week_min}` : null]])}</div>
+      ${d.no_data_policy ? `<div class="dir-group"><div class="g">Правило данных</div><ul><li>${esc(d.no_data_policy)}</li></ul></div>` : ""}
+    </div>
+  </details>`;
+}
+
+async function main() {
+  let state;
+  try {
+    const res = await fetch("/api/state");
+    state = await res.json();
+    if (state.error) throw new Error(state.error);
+  } catch (e) {
+    document.getElementById("content").innerHTML =
+      `<section><div class="card"><div class="empty">Не удалось прочитать данные: ${esc(e.message)}</div></div></section>`;
+    return;
+  }
+
+  document.getElementById("hdr-date").textContent = state.today_human;
+  const v = document.getElementById("hdr-verdict");
+  v.className = "verdict tone-" + state.verdict.tone;
+  v.innerHTML = `<span class="dot"></span><span>${esc(state.verdict.text)}</span>`;
+
+  document.getElementById("content").innerHTML = `
+    <section>
+      <div class="section-label">Столпы</div>
+      <div class="pillars">
+        ${renderSleep(state.sleep)}
+        ${renderMovement(state.movement)}
+        ${renderNutrition(state.nutrition)}
+        ${renderNervous(state.nervous)}
+      </div>
+    </section>
+    <section>
+      <div class="section-label">Месяц</div>
+      ${renderMonth(state.month)}
+    </section>
+    <section>
+      <div class="section-label">Анализы</div>
+      ${renderLabs(state.labs)}
+    </section>
+    <section>
+      <div class="section-label">Сдать далее</div>
+      ${renderRetest(state.labs.retest)}
+    </section>
+    <section>
+      ${renderDirectives(state.directives)}
+    </section>`;
+}
+
+main();
+</script>
+</body>
+</html>
